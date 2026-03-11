@@ -97,7 +97,7 @@ export const ResultsModal = ({ results, mode, onConfirm, onCancel }: Props) => {
 				{/* Header */}
 				<div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.1)", flexShrink: 0 }}>
 					<div style={{ fontSize: "16px", fontWeight: 600 }}>
-						{mode === "dedup" ? "Duplicate Tracks Found" : "Quality Upgrades Found"}
+						{mode === "dedup" ? "Duplicate Tracks Found" : "Higher Resolution Alternatives Found"}
 					</div>
 					<div style={{ fontSize: "12px", color: "rgba(255,255,255,0.5)", marginTop: "4px" }}>
 						{mode === "dedup"
@@ -247,7 +247,7 @@ export const ResultsModal = ({ results, mode, onConfirm, onCancel }: Props) => {
 						>
 							{mode === "dedup"
 								? `Remove ${totalRemove} track${totalRemove !== 1 ? "s" : ""}`
-								: `Apply ${totalAdd} upgrade${totalAdd !== 1 ? "s" : ""}`}
+								: `Apply ${totalAdd} replacement${totalAdd !== 1 ? "s" : ""}`}
 						</button>
 					</div>
 				</div>

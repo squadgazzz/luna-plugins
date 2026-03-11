@@ -102,7 +102,7 @@ export const Settings = () => {
 				: await scanForUpgrades(targets, onStatus, controller.signal);
 			refreshPlaylists();
 			if (results.length === 0) {
-				setStatus(currentScanMode === "dedup" ? "No duplicates found." : "No upgrades found.");
+				setStatus(currentScanMode === "dedup" ? "No duplicates found." : "No alternatives found.");
 			} else {
 				setScanResults(results);
 				setStatus("");
@@ -125,7 +125,7 @@ export const Settings = () => {
 		const controller = new AbortController();
 		abortRef.current = controller;
 		setRunning(true);
-		setStatus(currentScanMode === "dedup" ? "Removing..." : "Upgrading...");
+		setStatus(currentScanMode === "dedup" ? "Removing..." : "Replacing...");
 		setProgress(null);
 		try {
 			const onStatus = (msg: string, p?: ProgressInfo) => { setStatus(msg); setProgress(p ?? null); };
@@ -168,11 +168,16 @@ export const Settings = () => {
 					/>
 					<RadioOption
 						name="scanMode"
-						label="Find upgrades"
-						desc="Find better quality versions, remasters, and reissues"
+						label="Find remastered & Hi-Res versions"
+						desc="Find higher resolution versions, remasters, and reissues"
 						checked={currentScanMode === "upgrade"}
 						onChange={() => selectScanMode("upgrade")}
 					/>
+					{currentScanMode === "upgrade" && (
+						<div style={{ fontSize: "11px", color: "rgba(255,200,100,0.7)", padding: "4px 0 2px 26px", lineHeight: "1.4" }}>
+							Note: Higher bitrate/sample rate doesn't always mean better sound. Remasters may have lower dynamic range than originals. Review alternatives before applying.
+						</div>
+					)}
 				</div>
 
 				{currentScanMode === "dedup" && (
@@ -298,7 +303,7 @@ export const Settings = () => {
 							{!running
 								? currentScanMode === "dedup"
 									? `Scan for duplicates (${selected.size} selected)`
-									: `Scan for upgrades (${selected.size} selected)`
+									: `Find remastered & Hi-Res (${selected.size} selected)`
 								: status}
 						</button>
 						{running && (

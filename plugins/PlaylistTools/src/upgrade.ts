@@ -188,7 +188,7 @@ export async function scanForUpgrades(
 			: await fetchPlaylistItems(target.uuid, signal);
 
 		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
-		onStatus(`Scanning ${items.length} tracks from "${target.title}" for upgrades...`);
+		onStatus(`Scanning ${items.length} tracks from "${target.title}" for alternatives...`);
 
 		const indexed: IndexedTrack[] = items.map((item, index) => ({ index, track: item }));
 		const groups: DuplicateGroupResult[] = [];
@@ -218,7 +218,7 @@ export async function scanForUpgrades(
 				sem.release();
 				completed++;
 				if (completed % 10 === 0 || completed === indexed.length) {
-					onStatus(`Scanning "${target.title}": ${completed}/${indexed.length} tracks checked, ${groups.length} upgrades found...`, { current: completed, total: indexed.length });
+					onStatus(`Scanning "${target.title}": ${completed}/${indexed.length} tracks checked, ${groups.length} alternatives found...`, { current: completed, total: indexed.length });
 				}
 			}
 		};
@@ -255,10 +255,10 @@ export async function scanForUpgrades(
 				}
 			}));
 
-			onStatus(`Found ${groups.length} upgrade(s) in "${target.title}"`);
+			onStatus(`Found ${groups.length} alternative(s) in "${target.title}"`);
 			results.push({ target, groups, indexed });
 		} else {
-			onStatus(`No upgrades found in "${target.title}"`);
+			onStatus(`No alternatives found in "${target.title}"`);
 		}
 	}
 
