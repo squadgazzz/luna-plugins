@@ -50,14 +50,13 @@ function dispatchFilteredPlayNow(
 		}
 	}
 
-	const rotated = startIdx > 0
-		? [...filteredIds.slice(startIdx), ...filteredIds.slice(0, startIdx)]
-		: filteredIds;
+	// Slice from clicked track to end (don't wrap earlier tracks to the end)
+	const fromClicked = startIdx > 0 ? filteredIds.slice(startIdx) : filteredIds;
 
 	isInternalDispatch = true;
 	redux.actions["playQueue/ADD_ALREADY_LOADED_ITEMS_TO_QUEUE"]({
 		context,
-		items: rotated,
+		items: fromClicked,
 		fromIndex: 0,
 		position: "now",
 		forceShuffle,
@@ -130,7 +129,7 @@ export function setupQueueIntercepts(unloads: Set<LunaUnload>): void {
 		}
 
 		if (payload.position === "now") {
-			// Fallback path: rotate so clicked track is first
+			// Fallback path: slice from clicked track to end
 			const clickedTrackId = payload.items[payload.fromIndex ?? 0];
 			let startIdx = 0;
 			if (clickedTrackId !== undefined) {
@@ -138,14 +137,12 @@ export function setupQueueIntercepts(unloads: Set<LunaUnload>): void {
 					if (filteredIds[i] == clickedTrackId) { startIdx = i; break; }
 				}
 			}
-			const rotated = startIdx > 0
-				? [...filteredIds.slice(startIdx), ...filteredIds.slice(0, startIdx)]
-				: filteredIds;
+			const fromClicked = startIdx > 0 ? filteredIds.slice(startIdx) : filteredIds;
 
 			isInternalDispatch = true;
 			redux.actions["playQueue/ADD_ALREADY_LOADED_ITEMS_TO_QUEUE"]({
 				context: payload.context,
-				items: rotated,
+				items: fromClicked,
 				fromIndex: 0,
 				position: "now",
 				forceShuffle: payload.forceShuffle,
