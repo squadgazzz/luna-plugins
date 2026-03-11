@@ -5,19 +5,30 @@ import { addToPlaylistCache, getPlaylistTrackIds } from "./playlistCache";
 
 let currentTrackId: redux.ItemId | null = null;
 
-const PLAYLIST_ROW_SELECTOR = 'div[data-track--playlist-uuid][data-tracktype--playlist-uuid="string"]';
+// Match both context menu rows (div) and "Show all playlists" modal rows (button)
+const PLAYLIST_ROW_SELECTOR = '[data-track--playlist-uuid][data-tracktype--playlist-uuid="string"]';
 const INDICATOR_CLASS = "playlist-indicator-check";
 
 function injectIndicator(row: Element): void {
 	if (row.querySelector(`.${INDICATOR_CLASS}`) !== null) return;
 
-	const textSpan = row.querySelector<HTMLSpanElement>('span[class*="_actionTextInner"]');
-	if (textSpan === null) return;
-
 	const indicator = document.createElement("span");
 	indicator.className = INDICATOR_CLASS;
 	indicator.textContent = "✓";
-	textSpan.appendChild(indicator);
+
+	// Context menu layout: text is in span._actionTextInner
+	const textSpan = row.querySelector<HTMLSpanElement>('span[class*="_actionTextInner"]');
+	if (textSpan !== null) {
+		textSpan.appendChild(indicator);
+		return;
+	}
+
+	// "Show all playlists" modal layout: text is in div._lineHeader / div._cell-header
+	const headerDiv = row.querySelector<HTMLDivElement>('div[class*="_lineHeader"], div[class*="_cell-header"]');
+	if (headerDiv !== null) {
+		headerDiv.appendChild(indicator);
+		return;
+	}
 }
 
 export function setupContextMenuHandler(unloads: Set<LunaUnload>): void {
@@ -33,13 +44,12 @@ export function setupContextMenuHandler(unloads: Set<LunaUnload>): void {
 		currentTrackId = payload.id;
 	});
 
-	// Clear track ID when context menu closes
-	redux.intercept("contextMenu/CLOSE", unloads, () => {
-		currentTrackId = null;
-	});
+	// Don't clear track ID on contextMenu/CLOSE — the "Show all playlists" modal
+	// opens after the context menu closes, and still needs the track ID.
+	// It gets overwritten on the next OPEN/OPEN_MEDIA_ITEM instead.
 
-	// Observe playlist rows as they appear in the DOM
-	observe<HTMLDivElement>(unloads, PLAYLIST_ROW_SELECTOR, async (row) => {
+	// Observe playlist rows as they appear in the DOM (context menu + modal)
+	observe<HTMLElement>(unloads, PLAYLIST_ROW_SELECTOR, async (row) => {
 		const trackId = currentTrackId;
 		if (trackId === null) return;
 
