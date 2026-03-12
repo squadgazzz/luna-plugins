@@ -188,6 +188,7 @@ export interface TidalSearchResult {
 	artists: { id: number; name: string }[];
 	album?: { title: string; releaseDate?: string };
 	audioQuality?: string;
+	streamStartDate?: string;
 }
 
 export async function isrcLookupAll(isrc: string): Promise<TidalSearchResult[]> {
@@ -204,6 +205,7 @@ export async function isrcLookupAll(isrc: string): Promise<TidalSearchResult[]> 
 				artists: t.artists ?? [],
 				album: t.album ?? undefined,
 				audioQuality: t.audioQuality ?? undefined,
+				streamStartDate: t.streamStartDate ?? undefined,
 			});
 		}
 	} catch {
@@ -230,6 +232,7 @@ export async function searchTracks(query: string, signal?: AbortSignal): Promise
 		artists: t.artists ?? [],
 		album: t.album ?? undefined,
 		audioQuality: t.audioQuality ?? undefined,
+		streamStartDate: t.streamStartDate ?? undefined,
 	}));
 }
 

@@ -1,3 +1,5 @@
+import { MediaItem } from "@luna/lib";
+
 import type { IndexedTrack, TrackItem } from "./detection";
 import { isRemastered, stripRemasterTags } from "./detection";
 import type { DuplicateGroupResult, PlaylistScanResult, ProgressInfo, SelectedTarget, TrackChoice } from "./dedup";
@@ -5,7 +7,6 @@ import {
 	fetchFavoriteTracks,
 	fetchPlaylistItems,
 	fetchStreamInfo,
-	isrcLookupAll,
 	searchTracks,
 	type TidalSearchResult,
 } from "./tidalApi";
@@ -76,6 +77,24 @@ function toTrackItem(result: TidalSearchResult): TrackItem {
 			artists: result.artists.map((a) => ({ id: a.id ?? 0, name: a.name })),
 			album: result.album,
 			audioQuality: result.audioQuality,
+			streamStartDate: result.streamStartDate,
+		},
+	};
+}
+
+function mediaItemToTrackItem(mediaItem: MediaItem): TrackItem {
+	const t = mediaItem.tidalItem;
+	return {
+		item: {
+			id: t.id as number,
+			title: t.title ?? "",
+			version: t.version ?? undefined,
+			duration: t.duration ?? 0,
+			isrc: t.isrc ?? undefined,
+			artists: (t.artists ?? []).map((a: any) => ({ id: a.id ?? 0, name: a.name ?? "" })),
+			album: t.album ? { title: t.album.title ?? "", releaseDate: t.album.releaseDate ?? undefined } : undefined,
+			audioQuality: t.audioQuality ?? undefined,
+			streamStartDate: t.streamStartDate ?? undefined,
 		},
 	};
 }
@@ -98,64 +117,67 @@ function rankAlternatives(alternatives: TidalSearchResult[]): TidalSearchResult[
 	});
 }
 
-async function findAlternatives(
+/**
+ * First pass: use Luna's MediaItem.max() for fast, accurate ISRC-based quality lookup.
+ * Returns a TrackItem for the best version, or undefined if already at max.
+ */
+async function findMaxViaLuna(trackId: number): Promise<TrackItem | undefined> {
+	try {
+		const mediaItem = await MediaItem.fromId(trackId);
+		if (mediaItem === undefined) return undefined;
+		const maxItem = await mediaItem.max();
+		if (maxItem === undefined) return undefined;
+		return mediaItemToTrackItem(maxItem);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Second pass: title/artist search to find remasters, reissues, and alternatives
+ * that ISRC lookup might miss (different ISRCs, different albums, etc.)
+ */
+async function findAlternativesViaSearch(
 	track: TrackItem["item"],
+	excludeIds: Set<number>,
 	signal?: AbortSignal,
 ): Promise<TidalSearchResult[]> {
-	const candidates: TidalSearchResult[] = [];
-	const seenIds = new Set<number>();
-	seenIds.add(track.id);
-
-	if (track.isrc) {
-		const isrcResults = await isrcLookupAll(track.isrc);
-		for (const r of isrcResults) {
-			if (!seenIds.has(r.id)) {
-				seenIds.add(r.id);
-				candidates.push(r);
-			}
-		}
-	}
-
-	if (signal?.aborted) return [];
-
 	const query = `${simplify(track.title)} ${track.artists[0]?.name ?? ""}`;
 	const searchResults = await searchTracks(query, signal);
+	const candidates: TidalSearchResult[] = [];
 	for (const r of searchResults) {
-		if (!seenIds.has(r.id) && isSameSong(track, r)) {
-			seenIds.add(r.id);
+		if (!excludeIds.has(r.id) && isSameSong(track, r) && isBetter(track, r)) {
 			candidates.push(r);
 		}
 	}
 
-	// First pass: candidates clearly better by quality tier, remaster, or release date
-	const better = candidates.filter((c) => isBetter(track, c));
-	const betterIds = new Set(better.map((c) => c.id));
-
-	// Second pass: same quality tier — compare stream info (bit depth, sample rate)
+	// Also check same-tier candidates for higher bit depth/sample rate
 	const currentQuality = QUALITY_RANK[track.audioQuality ?? ""] ?? -1;
-	const sameTier = candidates.filter((c) => {
-		if (betterIds.has(c.id)) return false;
-		const q = QUALITY_RANK[c.audioQuality ?? ""] ?? -1;
-		return q === currentQuality && q >= 0;
-	});
+	const sameTier = searchResults.filter((r) =>
+		!excludeIds.has(r.id) &&
+		!candidates.some((c) => c.id === r.id) &&
+		isSameSong(track, r) &&
+		(QUALITY_RANK[r.audioQuality ?? ""] ?? -1) === currentQuality &&
+		currentQuality >= 0,
+	);
 
 	if (sameTier.length > 0) {
 		const currentStream = await fetchStreamInfo(track.id, track.audioQuality ?? "LOSSLESS");
 		if (currentStream && currentStream.bitDepth > 0) {
 			for (const c of sameTier) {
-				if (signal?.aborted) return [];
+				if (signal?.aborted) return candidates;
 				const cStream = await fetchStreamInfo(c.id, c.audioQuality ?? "LOSSLESS");
 				if (cStream && (
 					cStream.bitDepth > currentStream.bitDepth ||
 					(cStream.bitDepth === currentStream.bitDepth && cStream.sampleRate > currentStream.sampleRate)
 				)) {
-					better.push(c);
+					candidates.push(c);
 				}
 			}
 		}
 	}
 
-	return better;
+	return candidates;
 }
 
 class Semaphore {
@@ -200,9 +222,39 @@ export async function scanForUpgrades(
 			await sem.acquire();
 			try {
 				if (signal?.aborted) return;
-				const alternatives = await findAlternatives(it.track.item, signal);
-				if (alternatives.length > 0) {
-					const ranked = rankAlternatives(alternatives);
+
+				const allAlternatives: { track: TrackItem; isFromLuna: boolean }[] = [];
+				const excludeIds = new Set<number>([it.track.item.id]);
+
+				// First pass: Luna's MediaItem.max() (ISRC-based, accurate quality ranking)
+				const lunaMax = await findMaxViaLuna(it.track.item.id);
+				if (lunaMax !== undefined && lunaMax.item.id !== it.track.item.id) {
+					allAlternatives.push({ track: lunaMax, isFromLuna: true });
+					excludeIds.add(lunaMax.item.id);
+				}
+
+				// Second pass: title/artist search (finds remasters, reissues, different ISRCs)
+				if (!signal?.aborted) {
+					const searchResults = await findAlternativesViaSearch(it.track.item, excludeIds, signal);
+					for (const r of searchResults) {
+						allAlternatives.push({ track: toTrackItem(r), isFromLuna: false });
+					}
+				}
+
+				if (allAlternatives.length > 0) {
+					// Convert all to TidalSearchResult for consistent ranking
+					const asSearchResults: TidalSearchResult[] = allAlternatives.map((a) => ({
+						id: a.track.item.id,
+						title: a.track.item.title,
+						version: a.track.item.version,
+						duration: a.track.item.duration,
+						isrc: a.track.item.isrc,
+						artists: a.track.item.artists,
+						album: a.track.item.album,
+						audioQuality: a.track.item.audioQuality,
+						streamStartDate: a.track.item.streamStartDate,
+					}));
+					const ranked = rankAlternatives(asSearchResults);
 					const choices: TrackChoice[] = [
 						{ index: it.index, track: it, keep: false },
 						...ranked.map((alt, i) => ({
