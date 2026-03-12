@@ -214,16 +214,32 @@ export async function isrcLookupAll(isrc: string): Promise<TidalSearchResult[]> 
 	return results;
 }
 
+async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		const res = await fetch(url, init);
+		if (res.status !== 429 || attempt === maxRetries) return res;
+		const retryAfter = res.headers.get("Retry-After");
+		const jitter = Math.random() * 500;
+		const delay = (retryAfter ? parseInt(retryAfter, 10) * 1000 : 1000 * Math.pow(2, attempt)) + jitter;
+		await new Promise((r) => setTimeout(r, delay));
+		if (init.signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+	}
+	throw new Error("Unreachable");
+}
+
 export async function searchTracks(query: string, signal?: AbortSignal): Promise<TidalSearchResult[]> {
 	const headers = await TidalApi.getAuthHeaders();
 	const queryArgs = TidalApi.queryArgs();
-	const res = await fetch(
-		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`,
+	const res = await fetchWithRetry(
+		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=50`,
 		{ headers, signal },
 	);
-	if (!res.ok) return [];
+	if (!res.ok) {
+		console.log(`[searchTracks] FAILED query="${query}" status=${res.status}`);
+		return [];
+	}
 	const data = await res.json();
-	return ((data.items ?? []) as any[]).map((t) => ({
+	const items = ((data.items ?? []) as any[]).map((t) => ({
 		id: t.id,
 		title: t.title,
 		version: t.version ?? undefined,
@@ -234,6 +250,8 @@ export async function searchTracks(query: string, signal?: AbortSignal): Promise
 		audioQuality: t.audioQuality ?? undefined,
 		streamStartDate: t.streamStartDate ?? undefined,
 	}));
+	console.log(`[searchTracks] query="${query}" → ${items.length} results`);
+	return items;
 }
 
 export async function addToPlaylist(playlistUUID: string, trackIds: number[], signal?: AbortSignal): Promise<boolean> {

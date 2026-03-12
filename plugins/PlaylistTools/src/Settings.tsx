@@ -8,8 +8,11 @@ import {
 	byIsrc as initByIsrc,
 	byName as initByName,
 	byRemaster as initByRemaster,
+	clearCacheForPlaylist,
+	getCacheCountForPlaylist,
 	keepStrategy as initKeepStrategy,
 	scanMode as initScanMode,
+	saveUpgradeDecisions,
 	setById,
 	setByIsrc,
 	setByName,
@@ -36,6 +39,7 @@ export const Settings = () => {
 	const abortRef = useRef<AbortController | null>(null);
 	const [currentScanMode, setCurrentScanMode] = useState<ScanMode>(initScanMode);
 	const [progress, setProgress] = useState<ProgressInfo | null>(null);
+	const [dismissedVersion, setDismissedVersion] = useState(0);
 
 	const selectScanMode = (mode: ScanMode) => {
 		setScanMode(mode);
@@ -121,6 +125,33 @@ export const Settings = () => {
 	};
 
 	const handleConfirm = async (results: PlaylistScanResult[]) => {
+		// Save upgrade decisions per playlist:
+		// - User kept original + unchecked alternatives → dismissed (never suggest again)
+		// - User replaced original + checked alternatives → accepted (skip while in playlist, re-suggest if removed)
+		if (currentScanMode === "upgrade") {
+			for (const r of results) {
+				const dismissed = new Map<number, number[]>();
+				const accepted = new Map<number, number[]>();
+				for (const g of r.groups) {
+					const current = g.choices.find((c) => !c.isAlternative);
+					if (!current) continue;
+					const originalId = current.track.track.item.id;
+
+					if (current.keep) {
+						const ids = g.choices.filter((c) => c.isAlternative && !c.keep).map((c) => c.track.track.item.id);
+						if (ids.length > 0) dismissed.set(originalId, ids);
+					} else {
+						const ids = g.choices.filter((c) => c.isAlternative && c.keep).map((c) => c.track.track.item.id);
+						if (ids.length > 0) accepted.set(originalId, ids);
+					}
+				}
+				if (dismissed.size > 0 || accepted.size > 0) {
+					saveUpgradeDecisions(r.target.uuid, dismissed, accepted);
+				}
+			}
+			setDismissedVersion((v) => v + 1);
+		}
+
 		setScanResults(null);
 		const controller = new AbortController();
 		abortRef.current = controller;
@@ -267,6 +298,9 @@ export const Settings = () => {
 									trackCount={favCount}
 									checked={selected.has(FAVORITES_UUID)}
 									onToggle={toggleSelected}
+									cacheCount={currentScanMode === "upgrade" ? getCacheCountForPlaylist(FAVORITES_UUID) : 0}
+									onClearCache={() => { clearCacheForPlaylist(FAVORITES_UUID); setDismissedVersion((v) => v + 1); }}
+									cacheVersion={dismissedVersion}
 								/>
 								{playlists.map((pl) => (
 									<PlaylistRow
@@ -276,6 +310,9 @@ export const Settings = () => {
 										trackCount={pl.numberOfTracks}
 										checked={selected.has(pl.uuid)}
 										onToggle={toggleSelected}
+										cacheCount={currentScanMode === "upgrade" ? getCacheCountForPlaylist(pl.uuid) : 0}
+										onClearCache={() => { clearCacheForPlaylist(pl.uuid); setDismissedVersion((v) => v + 1); }}
+										cacheVersion={dismissedVersion}
 									/>
 								))}
 							</>
@@ -397,37 +434,72 @@ const PlaylistRow = ({
 	trackCount,
 	checked,
 	onToggle,
+	cacheCount,
+	onClearCache,
+	cacheVersion: _cacheVersion,
 }: {
 	uuid: string;
 	title: string;
 	trackCount: number | null;
 	checked: boolean;
 	onToggle: (uuid: string) => void;
+	cacheCount: number;
+	onClearCache: () => void;
+	cacheVersion: number;
 }) => (
-	<label
+	<div
 		style={{
 			display: "flex",
 			alignItems: "center",
 			padding: "8px 12px",
-			cursor: "pointer",
-			userSelect: "none",
 			borderBottom: "1px solid rgba(255,255,255,0.05)",
 			background: checked ? "rgba(255,255,255,0.05)" : "transparent",
 		}}
 	>
-		<input
-			type="checkbox"
-			checked={checked}
-			onChange={() => onToggle(uuid)}
-			style={{ marginRight: "10px", flexShrink: 0 }}
-		/>
-		<span style={{ fontSize: "13px", color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-			{title}
-		</span>
+		<label
+			style={{
+				display: "flex",
+				alignItems: "center",
+				cursor: "pointer",
+				userSelect: "none",
+				flex: 1,
+				minWidth: 0,
+			}}
+		>
+			<input
+				type="checkbox"
+				checked={checked}
+				onChange={() => onToggle(uuid)}
+				style={{ marginRight: "10px", flexShrink: 0 }}
+			/>
+			<span style={{ fontSize: "13px", color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+				{title}
+			</span>
+		</label>
+		{cacheCount > 0 && (
+			<button
+				onClick={(e) => { e.stopPropagation(); onClearCache(); }}
+				title={`Clear ${cacheCount} cached decision(s)`}
+				style={{
+					fontSize: "10px",
+					color: "rgba(255,255,255,0.4)",
+					background: "transparent",
+					border: "1px solid rgba(255,255,255,0.12)",
+					borderRadius: "3px",
+					padding: "1px 5px",
+					cursor: "pointer",
+					marginLeft: "6px",
+					flexShrink: 0,
+					whiteSpace: "nowrap",
+				}}
+			>
+				{cacheCount} cached
+			</button>
+		)}
 		{trackCount !== null && (
 			<span style={{ fontSize: "11px", color: "rgba(255,255,255,0.4)", marginLeft: "8px", flexShrink: 0 }}>
 				{trackCount} tracks
 			</span>
 		)}
-	</label>
+	</div>
 );

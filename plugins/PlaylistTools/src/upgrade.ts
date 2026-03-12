@@ -3,10 +3,12 @@ import { MediaItem } from "@luna/lib";
 import type { IndexedTrack, TrackItem } from "./detection";
 import { isRemastered, stripRemasterTags } from "./detection";
 import type { DuplicateGroupResult, PlaylistScanResult, ProgressInfo, SelectedTarget, TrackChoice } from "./dedup";
+import { shouldSkipUpgrade } from "./state";
 import {
 	fetchFavoriteTracks,
 	fetchPlaylistItems,
 	fetchStreamInfo,
+	isrcLookupAll,
 	searchTracks,
 	type TidalSearchResult,
 } from "./tidalApi";
@@ -138,15 +140,30 @@ async function findAlternativesViaSearch(
 	excludeIds: Set<number>,
 	signal?: AbortSignal,
 ): Promise<TidalSearchResult[]> {
-	const query = `${simplify(track.title)} ${track.artists[0]?.name ?? ""}`;
+	const artist = track.artists[0]?.name ?? "";
+	const simplified = simplify(track.title);
+	const query = `${simplified} ${artist}`;
+	const dbg = `[search:${track.id} "${track.title}"]`;
 	const searchResults = await searchTracks(query, signal);
+	console.log(`${dbg} query="${query}" → ${searchResults.length} results`);
 	const candidates: TidalSearchResult[] = [];
+	const seenIds = new Set<number>();
 	for (const r of searchResults) {
-		if (!excludeIds.has(r.id) && isSameSong(track, r) && isBetter(track, r)) {
+		if (excludeIds.has(r.id)) {
+			console.log(`${dbg} skip ${r.id} "${r.title}" (already in playlist)`);
+			continue;
+		}
+		if (seenIds.has(r.id)) continue;
+		const same = isSameSong(track, r);
+		const better = same && isBetter(track, r);
+		if (same && better) {
 			candidates.push(r);
+			seenIds.add(r.id);
+		} else {
+			console.log(`${dbg} rejected ${r.id} "${r.title}" v="${r.version ?? ""}" q=${r.audioQuality} dur=${r.duration} curDur=${track.duration} (sameSong=${same}, better=${better})`);
 		}
 	}
-	// Same-tier bit depth/sample rate is handled by Luna's MediaItem.max() in the first pass
+
 	return candidates;
 }
 
@@ -188,6 +205,10 @@ class Semaphore {
 	}
 }
 
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function scanForUpgrades(
 	targets: SelectedTarget[],
 	onStatus: (msg: string, progress?: ProgressInfo) => void,
@@ -206,8 +227,9 @@ export async function scanForUpgrades(
 		onStatus(`Scanning ${items.length} tracks from "${target.title}" for alternatives...`);
 
 		const indexed: IndexedTrack[] = items.map((item, index) => ({ index, track: item }));
+		const existingIds = new Set(indexed.map((it) => it.track.item.id));
 		const groups: DuplicateGroupResult[] = [];
-		const sem = new Semaphore(10);
+		const sem = new Semaphore(3);
 		let completed = 0;
 
 		const scanOne = async (it: IndexedTrack) => {
@@ -217,20 +239,63 @@ export async function scanForUpgrades(
 				if (signal?.aborted) return;
 
 				const allAlternatives: { track: TrackItem; isFromLuna: boolean }[] = [];
-				const excludeIds = new Set<number>([it.track.item.id]);
+				const excludeIds = new Set<number>(existingIds);
+				const originalId = it.track.item.id;
+				const dbg = `[upgrade:${originalId} "${it.track.item.title}"]`;
 
 				// First pass: Luna's MediaItem.max() (ISRC-based, accurate quality ranking)
-				const lunaMax = await findMaxViaLuna(it.track.item.id);
-				if (lunaMax !== undefined && lunaMax.item.id !== it.track.item.id) {
-					allAlternatives.push({ track: lunaMax, isFromLuna: true });
-					excludeIds.add(lunaMax.item.id);
+				const lunaMax = await findMaxViaLuna(originalId);
+				if (lunaMax !== undefined) {
+					const dominated = lunaMax.item.id === originalId;
+					const skipped = !dominated && shouldSkipUpgrade(target.uuid, originalId, lunaMax.item.id, existingIds);
+					const inPlaylist = existingIds.has(lunaMax.item.id);
+					console.log(`${dbg} Luna max → ${lunaMax.item.id} "${lunaMax.item.title}" v="${lunaMax.item.version ?? ""}" q=${lunaMax.item.audioQuality} (sameId=${dominated}, skipped=${skipped}, inPlaylist=${inPlaylist})`);
+					if (!dominated && !skipped) {
+						allAlternatives.push({ track: lunaMax, isFromLuna: true });
+						excludeIds.add(lunaMax.item.id);
+					}
+				} else {
+					console.log(`${dbg} Luna max → undefined`);
 				}
 
-				// Second pass: title/artist search (finds remasters, reissues, different ISRCs)
+				// Small pause between API calls to spread load
+				if (!signal?.aborted) await delay(100);
+
+				// Second pass: direct ISRC lookup — finds all versions of same recording on Tidal
+				if (!signal?.aborted && it.track.item.isrc) {
+					const isrcResults = await isrcLookupAll(it.track.item.isrc);
+					console.log(`${dbg} ISRC "${it.track.item.isrc}" → ${isrcResults.length} version(s)`);
+					// Log a few samples to diagnose filtering
+					for (const r of isrcResults.slice(0, 3)) {
+						console.log(`${dbg} ISRC sample: ${r.id} "${r.title}" v="${r.version ?? ""}" q=${r.audioQuality} album="${r.album?.title ?? "?"}" remastered=${isTrackRemastered(r)}`);
+					}
+					// Check specifically for the known remaster
+					const known = isrcResults.find((r) => r.id === 68633325);
+					if (known) {
+						console.log(`${dbg} ISRC has 68633325: "${known.title}" v="${known.version ?? ""}" q=${known.audioQuality} album="${known.album?.title ?? "?"}" remastered=${isTrackRemastered(known)} isBetter=${isBetter(it.track.item, known)}`);
+					}
+					for (const r of isrcResults) {
+						if (r.id === originalId || excludeIds.has(r.id)) continue;
+						if (isBetter(it.track.item, r) && !shouldSkipUpgrade(target.uuid, originalId, r.id, existingIds)) {
+							console.log(`${dbg} ISRC match: ${r.id} "${r.title}" v="${r.version ?? ""}" q=${r.audioQuality}`);
+							allAlternatives.push({ track: toTrackItem(r), isFromLuna: false });
+							excludeIds.add(r.id);
+						}
+					}
+				}
+
+				if (!signal?.aborted) await delay(100);
+
+				// Third pass: title/artist search (finds different-ISRC alternatives, remasters from other albums)
 				if (!signal?.aborted) {
 					const searchResults = await findAlternativesViaSearch(it.track.item, excludeIds, signal);
+					console.log(`${dbg} search → ${searchResults.length} candidate(s)`, searchResults.map((r) => `${r.id} "${r.title}" v="${r.version ?? ""}" q=${r.audioQuality}`));
 					for (const r of searchResults) {
-						allAlternatives.push({ track: toTrackItem(r), isFromLuna: false });
+						if (!shouldSkipUpgrade(target.uuid, originalId, r.id, existingIds)) {
+							allAlternatives.push({ track: toTrackItem(r), isFromLuna: false });
+						} else {
+							console.log(`${dbg} search candidate ${r.id} skipped by cache`);
+						}
 					}
 				}
 
@@ -263,7 +328,7 @@ export async function scanForUpgrades(
 				sem.release();
 				completed++;
 				if (completed % 10 === 0 || completed === indexed.length) {
-					onStatus(`Scanning "${target.title}": ${completed}/${indexed.length} tracks checked, ${groups.length} alternatives found...`, { current: completed, total: indexed.length });
+					onStatus(`Scanning "${target.title}": ${completed}/${indexed.length} tracks checked...`, { current: completed, total: indexed.length });
 				}
 			}
 		};
@@ -282,7 +347,7 @@ export async function scanForUpgrades(
 			}
 
 			let infoDone = 0;
-			const infoSem = new Semaphore(10);
+			const infoSem = new Semaphore(3);
 			await Promise.all(allChoices.map(async (choice) => {
 				await infoSem.acquire();
 				try {
@@ -305,7 +370,15 @@ export async function scanForUpgrades(
 			for (const g of groups) {
 				const current = g.choices.find((c) => !c.isAlternative);
 				if (!current) continue;
-				const validChoices = g.choices.filter((c) => !c.isAlternative || hasVisibleImprovement(current, c));
+				const validChoices = g.choices.filter((c) => {
+					if (!c.isAlternative) return true;
+					const visible = hasVisibleImprovement(current, c);
+					if (!visible) {
+						const alt = c.track.track.item;
+						console.log(`[upgrade:${current.track.track.item.id}] filtered out alt ${alt.id} "${alt.title}" v="${alt.version ?? ""}" — no visible improvement`);
+					}
+					return visible;
+				});
 				if (validChoices.some((c) => c.isAlternative)) {
 					filteredGroups.push({ choices: validChoices });
 				}
