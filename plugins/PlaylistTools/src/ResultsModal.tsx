@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 
-import type { PlaylistScanResult } from "./dedup";
-import { fullTitle } from "./detection";
+import type { PlaylistScanResult, TrackChoice } from "./dedup";
+import { fullTitle, isRemastered } from "./detection";
 import type { ScanMode } from "./state";
 
 function formatDuration(seconds: number): string {
@@ -23,6 +23,64 @@ function qualityLabel(quality?: string): string {
 		default:
 			return quality ?? "?";
 	}
+}
+
+const QUALITY_RANK: Record<string, number> = {
+	LOW: 0, HIGH: 1, LOSSLESS: 2, HI_RES_LOSSLESS: 3,
+};
+
+interface UpgradeReason {
+	label: string;
+	color: string;
+	bg: string;
+}
+
+function getUpgradeReasons(current: TrackChoice, alternative: TrackChoice): UpgradeReason[] {
+	const reasons: UpgradeReason[] = [];
+	const curItem = current.track.track.item;
+	const altItem = alternative.track.track.item;
+
+	const curQual = QUALITY_RANK[curItem.audioQuality ?? ""] ?? -1;
+	const altQual = QUALITY_RANK[altItem.audioQuality ?? ""] ?? -1;
+
+	if (altQual > curQual) {
+		reasons.push({
+			label: `${qualityLabel(curItem.audioQuality)} → ${qualityLabel(altItem.audioQuality)}`,
+			color: "rgba(80,200,180,0.9)",
+			bg: "rgba(80,200,180,0.15)",
+		});
+	}
+
+	const curStream = current.streamInfo;
+	const altStream = alternative.streamInfo;
+	if (curStream && altStream && curStream.bitDepth > 0 && altStream.bitDepth > 0) {
+		if (altStream.bitDepth > curStream.bitDepth) {
+			reasons.push({
+				label: `${curStream.bitDepth}bit → ${altStream.bitDepth}bit`,
+				color: "rgba(100,160,255,0.9)",
+				bg: "rgba(100,160,255,0.15)",
+			});
+		}
+		if (altStream.sampleRate > curStream.sampleRate) {
+			reasons.push({
+				label: `${(curStream.sampleRate / 1000).toFixed(1)}kHz → ${(altStream.sampleRate / 1000).toFixed(1)}kHz`,
+				color: "rgba(100,160,255,0.9)",
+				bg: "rgba(100,160,255,0.15)",
+			});
+		}
+	}
+
+	const altIsRemaster = isRemastered(altItem.title, altItem.version) || (altItem.album ? isRemastered(altItem.album.title) : false);
+	const curIsRemaster = isRemastered(curItem.title, curItem.version) || (curItem.album ? isRemastered(curItem.album.title) : false);
+	if (altIsRemaster && !curIsRemaster) {
+		reasons.push({
+			label: "Remaster",
+			color: "rgba(255,200,100,0.9)",
+			bg: "rgba(255,200,100,0.15)",
+		});
+	}
+
+	return reasons;
 }
 
 interface Props {
@@ -123,10 +181,15 @@ export const ResultsModal = ({ results, mode, onConfirm, onCancel }: Props) => {
 										background: "rgba(255,255,255,0.03)",
 									}}
 								>
-									{group.choices.map((choice, ci) => {
+									{(() => {
+									const currentChoice = group.choices.find((c) => !c.isAlternative);
+									return group.choices.map((choice, ci) => {
 										const t = choice.track.track.item;
 										const artists = t.artists.map((a) => a.name).join(", ");
 										const year = (t.album?.releaseDate ?? t.streamStartDate)?.slice(0, 4);
+										const reasons = mode === "upgrade" && choice.isAlternative && currentChoice
+											? getUpgradeReasons(currentChoice, choice)
+											: [];
 										return (
 											<label
 												key={ci}
@@ -148,17 +211,30 @@ export const ResultsModal = ({ results, mode, onConfirm, onCancel }: Props) => {
 													style={{ flexShrink: 0 }}
 												/>
 												{mode === "upgrade" && (
-													<span style={{
-														fontSize: "9px",
-														fontWeight: 600,
-														padding: "1px 5px",
-														borderRadius: "3px",
-														flexShrink: 0,
-														background: choice.isAlternative ? "rgba(80,200,120,0.2)" : "rgba(255,255,255,0.1)",
-														color: choice.isAlternative ? "rgba(80,200,120,0.8)" : "rgba(255,255,255,0.5)",
-													}}>
-														{choice.isAlternative ? "NEW" : "CURRENT"}
-													</span>
+													<div style={{ display: "flex", gap: "3px", flexShrink: 0, flexWrap: "wrap" }}>
+														<span style={{
+															fontSize: "9px",
+															fontWeight: 600,
+															padding: "1px 5px",
+															borderRadius: "3px",
+															background: choice.isAlternative ? "rgba(80,200,120,0.2)" : "rgba(255,255,255,0.1)",
+															color: choice.isAlternative ? "rgba(80,200,120,0.8)" : "rgba(255,255,255,0.5)",
+														}}>
+															{choice.isAlternative ? "NEW" : "CURRENT"}
+														</span>
+														{reasons.map((r, ri) => (
+															<span key={ri} style={{
+																fontSize: "9px",
+																fontWeight: 600,
+																padding: "1px 5px",
+																borderRadius: "3px",
+																background: r.bg,
+																color: r.color,
+															}}>
+																{r.label}
+															</span>
+														))}
+													</div>
 												)}
 												<div style={{ flex: 1, minWidth: 0 }}>
 													<div
@@ -193,7 +269,8 @@ export const ResultsModal = ({ results, mode, onConfirm, onCancel }: Props) => {
 												</div>
 											</label>
 										);
-									})}
+									});
+								})()}
 								</div>
 							))}
 						</div>

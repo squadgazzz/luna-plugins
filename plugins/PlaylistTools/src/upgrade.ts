@@ -47,21 +47,17 @@ function isSameSong(current: TrackItem["item"], candidate: TidalSearchResult): b
 	return currentName === candidateName || currentName.includes(candidateName) || candidateName.includes(currentName);
 }
 
+function isTrackRemastered(item: { title: string; version?: string; album?: { title: string } }): boolean {
+	return isRemastered(item.title, item.version) || (item.album ? isRemastered(item.album.title) : false);
+}
+
 function isBetter(current: TrackItem["item"], candidate: TidalSearchResult): boolean {
 	const currentQuality = QUALITY_RANK[current.audioQuality ?? ""] ?? -1;
 	const candidateQuality = QUALITY_RANK[candidate.audioQuality ?? ""] ?? -1;
 
 	if (candidateQuality > currentQuality) return true;
 
-	const currentRemastered = isRemastered(current.title, current.version);
-	const candidateRemastered = isRemastered(candidate.title, candidate.version);
-	if (candidateRemastered && !currentRemastered) return true;
-
-	if (candidateQuality === currentQuality) {
-		const currentDate = current.album?.releaseDate;
-		const candidateDate = candidate.album?.releaseDate;
-		if (currentDate && candidateDate && candidateDate > currentDate) return true;
-	}
+	if (isTrackRemastered(candidate) && !isTrackRemastered(current)) return true;
 
 	return false;
 }
@@ -105,8 +101,8 @@ function rankAlternatives(alternatives: TidalSearchResult[]): TidalSearchResult[
 		const qualB = QUALITY_RANK[b.audioQuality ?? ""] ?? -1;
 		if (qualB !== qualA) return qualB - qualA;
 
-		const remA = isRemastered(a.title, a.version) ? 1 : 0;
-		const remB = isRemastered(b.title, b.version) ? 1 : 0;
+		const remA = isTrackRemastered(a) ? 1 : 0;
+		const remB = isTrackRemastered(b) ? 1 : 0;
 		if (remB !== remA) return remB - remA;
 
 		const dateA = a.album?.releaseDate ?? "";
@@ -150,34 +146,31 @@ async function findAlternativesViaSearch(
 			candidates.push(r);
 		}
 	}
+	// Same-tier bit depth/sample rate is handled by Luna's MediaItem.max() in the first pass
+	return candidates;
+}
 
-	// Also check same-tier candidates for higher bit depth/sample rate
-	const currentQuality = QUALITY_RANK[track.audioQuality ?? ""] ?? -1;
-	const sameTier = searchResults.filter((r) =>
-		!excludeIds.has(r.id) &&
-		!candidates.some((c) => c.id === r.id) &&
-		isSameSong(track, r) &&
-		(QUALITY_RANK[r.audioQuality ?? ""] ?? -1) === currentQuality &&
-		currentQuality >= 0,
-	);
+function hasVisibleImprovement(current: TrackChoice, alternative: TrackChoice): boolean {
+	const curItem = current.track.track.item;
+	const altItem = alternative.track.track.item;
 
-	if (sameTier.length > 0) {
-		const currentStream = await fetchStreamInfo(track.id, track.audioQuality ?? "LOSSLESS");
-		if (currentStream && currentStream.bitDepth > 0) {
-			for (const c of sameTier) {
-				if (signal?.aborted) return candidates;
-				const cStream = await fetchStreamInfo(c.id, c.audioQuality ?? "LOSSLESS");
-				if (cStream && (
-					cStream.bitDepth > currentStream.bitDepth ||
-					(cStream.bitDepth === currentStream.bitDepth && cStream.sampleRate > currentStream.sampleRate)
-				)) {
-					candidates.push(c);
-				}
-			}
-		}
+	// Higher quality tier
+	const curQual = QUALITY_RANK[curItem.audioQuality ?? ""] ?? -1;
+	const altQual = QUALITY_RANK[altItem.audioQuality ?? ""] ?? -1;
+	if (altQual > curQual) return true;
+
+	// Higher bit depth or sample rate
+	const curStream = current.streamInfo;
+	const altStream = alternative.streamInfo;
+	if (curStream && altStream && curStream.bitDepth > 0 && altStream.bitDepth > 0) {
+		if (altStream.bitDepth > curStream.bitDepth) return true;
+		if (altStream.sampleRate > curStream.sampleRate) return true;
 	}
 
-	return candidates;
+	// Remaster (track title, version, or album title)
+	if (isTrackRemastered(altItem) && !isTrackRemastered(curItem)) return true;
+
+	return false;
 }
 
 class Semaphore {
@@ -307,8 +300,23 @@ export async function scanForUpgrades(
 				}
 			}));
 
-			onStatus(`Found ${groups.length} alternative(s) in "${target.title}"`);
-			results.push({ target, groups, indexed });
+			// Filter out alternatives with no visible improvement (removes Luna false positives)
+			const filteredGroups: DuplicateGroupResult[] = [];
+			for (const g of groups) {
+				const current = g.choices.find((c) => !c.isAlternative);
+				if (!current) continue;
+				const validChoices = g.choices.filter((c) => !c.isAlternative || hasVisibleImprovement(current, c));
+				if (validChoices.some((c) => c.isAlternative)) {
+					filteredGroups.push({ choices: validChoices });
+				}
+			}
+
+			if (filteredGroups.length > 0) {
+				onStatus(`Found ${filteredGroups.length} alternative(s) in "${target.title}"`);
+				results.push({ target, groups: filteredGroups, indexed });
+			} else {
+				onStatus(`No alternatives found in "${target.title}"`);
+			}
 		} else {
 			onStatus(`No alternatives found in "${target.title}"`);
 		}
