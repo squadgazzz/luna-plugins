@@ -1,5 +1,3 @@
-import { MediaItem } from "@luna/lib";
-
 import type { IndexedTrack, TrackItem } from "./detection";
 import { isRemastered, stripRemasterTags } from "./detection";
 import type { DuplicateGroupResult, PlaylistScanResult, ProgressInfo, SelectedTarget, TrackChoice } from "./dedup";
@@ -8,7 +6,8 @@ import {
 	fetchFavoriteTracks,
 	fetchPlaylistItems,
 	fetchStreamInfo,
-	isrcLookupAll,
+	getRateLimitHits,
+	resetRateLimitHits,
 	searchTracks,
 	type TidalSearchResult,
 } from "./tidalApi";
@@ -42,11 +41,18 @@ function artistOverlap(a: { name: string }[], b: { name: string }[]): boolean {
 
 function isSameSong(current: TrackItem["item"], candidate: TidalSearchResult): boolean {
 	if (!artistOverlap(current.artists, candidate.artists)) return false;
-	if (!durationMatch(current.duration, candidate.duration)) return false;
 
 	const currentName = normalize(simplify(stripRemasterTags(current.title)));
 	const candidateName = normalize(simplify(stripRemasterTags(candidate.title)));
-	return currentName === candidateName || currentName.includes(candidateName) || candidateName.includes(currentName);
+	const nameMatch = currentName === candidateName || currentName.includes(candidateName) || candidateName.includes(currentName);
+	if (!nameMatch) return false;
+
+	// Remasters can differ by up to ~15s due to mastering changes; use relaxed tolerance
+	const eitherRemaster = isTrackRemastered(candidate) || isTrackRemastered(current);
+	const tolerance = eitherRemaster ? 15 : 2;
+	if (!durationMatch(current.duration, candidate.duration, tolerance)) return false;
+
+	return true;
 }
 
 function isTrackRemastered(item: { title: string; version?: string; album?: { title: string } }): boolean {
@@ -80,23 +86,6 @@ function toTrackItem(result: TidalSearchResult): TrackItem {
 	};
 }
 
-function mediaItemToTrackItem(mediaItem: MediaItem): TrackItem {
-	const t = mediaItem.tidalItem;
-	return {
-		item: {
-			id: t.id as number,
-			title: t.title ?? "",
-			version: t.version ?? undefined,
-			duration: t.duration ?? 0,
-			isrc: t.isrc ?? undefined,
-			artists: (t.artists ?? []).map((a: any) => ({ id: a.id ?? 0, name: a.name ?? "" })),
-			album: t.album ? { title: t.album.title ?? "", releaseDate: t.album.releaseDate ?? undefined } : undefined,
-			audioQuality: t.audioQuality ?? undefined,
-			streamStartDate: t.streamStartDate ?? undefined,
-		},
-	};
-}
-
 function rankAlternatives(alternatives: TidalSearchResult[]): TidalSearchResult[] {
 	return [...alternatives].sort((a, b) => {
 		const qualA = QUALITY_RANK[a.audioQuality ?? ""] ?? -1;
@@ -115,26 +104,7 @@ function rankAlternatives(alternatives: TidalSearchResult[]): TidalSearchResult[
 	});
 }
 
-/**
- * First pass: use Luna's MediaItem.max() for fast, accurate ISRC-based quality lookup.
- * Returns a TrackItem for the best version, or undefined if already at max.
- */
-async function findMaxViaLuna(trackId: number): Promise<TrackItem | undefined> {
-	try {
-		const mediaItem = await MediaItem.fromId(trackId);
-		if (mediaItem === undefined) return undefined;
-		const maxItem = await mediaItem.max();
-		if (maxItem === undefined) return undefined;
-		return mediaItemToTrackItem(maxItem);
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * Second pass: title/artist search to find remasters, reissues, and alternatives
- * that ISRC lookup might miss (different ISRCs, different albums, etc.)
- */
+/** Search by title/artist for remasters, higher quality versions, and alternatives. */
 async function findAlternativesViaSearch(
 	track: TrackItem["item"],
 	excludeIds: Set<number>,
@@ -142,26 +112,35 @@ async function findAlternativesViaSearch(
 ): Promise<TidalSearchResult[]> {
 	const artist = track.artists[0]?.name ?? "";
 	const simplified = simplify(track.title);
-	const query = `${simplified} ${artist}`;
-	const dbg = `[search:${track.id} "${track.title}"]`;
-	const searchResults = await searchTracks(query, signal);
-	console.log(`${dbg} query="${query}" → ${searchResults.length} results`);
-	const candidates: TidalSearchResult[] = [];
+
+	const filterCandidates = (results: TidalSearchResult[], seenIds: Set<number>): TidalSearchResult[] => {
+		const candidates: TidalSearchResult[] = [];
+		for (const r of results) {
+			if (excludeIds.has(r.id)) continue;
+			if (seenIds.has(r.id)) continue;
+			const same = isSameSong(track, r);
+			const better = same && isBetter(track, r);
+			if (same && better) {
+				candidates.push(r);
+				seenIds.add(r.id);
+			}
+		}
+		return candidates;
+	};
+
 	const seenIds = new Set<number>();
-	for (const r of searchResults) {
-		if (excludeIds.has(r.id)) {
-			console.log(`${dbg} skip ${r.id} "${r.title}" (already in playlist)`);
-			continue;
-		}
-		if (seenIds.has(r.id)) continue;
-		const same = isSameSong(track, r);
-		const better = same && isBetter(track, r);
-		if (same && better) {
-			candidates.push(r);
-			seenIds.add(r.id);
-		} else {
-			console.log(`${dbg} rejected ${r.id} "${r.title}" v="${r.version ?? ""}" q=${r.audioQuality} dur=${r.duration} curDur=${track.duration} (sameSong=${same}, better=${better})`);
-		}
+
+	// Regular search
+	const query = `${simplified} ${artist}`;
+	const searchResults = await searchTracks(query, signal);
+	const candidates = filterCandidates(searchResults, seenIds);
+
+	// If no candidates, try a remaster-specific search
+	if (candidates.length === 0 && !signal?.aborted) {
+		const remasterQuery = `${simplified} remaster ${artist}`;
+		const remasterResults = await searchTracks(remasterQuery, signal);
+		const remasterCandidates = filterCandidates(remasterResults, seenIds);
+		for (const c of remasterCandidates) candidates.push(c);
 	}
 
 	return candidates;
@@ -205,9 +184,6 @@ class Semaphore {
 	}
 }
 
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export async function scanForUpgrades(
 	targets: SelectedTarget[],
@@ -215,6 +191,7 @@ export async function scanForUpgrades(
 	signal?: AbortSignal,
 ): Promise<PlaylistScanResult[]> {
 	const results: PlaylistScanResult[] = [];
+	resetRateLimitHits();
 
 	for (const target of targets) {
 		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
@@ -237,82 +214,23 @@ export async function scanForUpgrades(
 			await sem.acquire();
 			try {
 				if (signal?.aborted) return;
+				// Stagger requests to avoid bursts
+				await new Promise((r) => setTimeout(r, 100));
 
-				const allAlternatives: { track: TrackItem; isFromLuna: boolean }[] = [];
 				const excludeIds = new Set<number>(existingIds);
 				const originalId = it.track.item.id;
-				const dbg = `[upgrade:${originalId} "${it.track.item.title}"]`;
 
-				// First pass: Luna's MediaItem.max() (ISRC-based, accurate quality ranking)
-				const lunaMax = await findMaxViaLuna(originalId);
-				if (lunaMax !== undefined) {
-					const dominated = lunaMax.item.id === originalId;
-					const skipped = !dominated && shouldSkipUpgrade(target.uuid, originalId, lunaMax.item.id, existingIds);
-					const inPlaylist = existingIds.has(lunaMax.item.id);
-					console.log(`${dbg} Luna max → ${lunaMax.item.id} "${lunaMax.item.title}" v="${lunaMax.item.version ?? ""}" q=${lunaMax.item.audioQuality} (sameId=${dominated}, skipped=${skipped}, inPlaylist=${inPlaylist})`);
-					if (!dominated && !skipped) {
-						allAlternatives.push({ track: lunaMax, isFromLuna: true });
-						excludeIds.add(lunaMax.item.id);
-					}
-				} else {
-					console.log(`${dbg} Luna max → undefined`);
-				}
-
-				// Small pause between API calls to spread load
-				if (!signal?.aborted) await delay(100);
-
-				// Second pass: direct ISRC lookup — finds all versions of same recording on Tidal
-				if (!signal?.aborted && it.track.item.isrc) {
-					const isrcResults = await isrcLookupAll(it.track.item.isrc);
-					console.log(`${dbg} ISRC "${it.track.item.isrc}" → ${isrcResults.length} version(s)`);
-					// Log a few samples to diagnose filtering
-					for (const r of isrcResults.slice(0, 3)) {
-						console.log(`${dbg} ISRC sample: ${r.id} "${r.title}" v="${r.version ?? ""}" q=${r.audioQuality} album="${r.album?.title ?? "?"}" remastered=${isTrackRemastered(r)}`);
-					}
-					// Check specifically for the known remaster
-					const known = isrcResults.find((r) => r.id === 68633325);
-					if (known) {
-						console.log(`${dbg} ISRC has 68633325: "${known.title}" v="${known.version ?? ""}" q=${known.audioQuality} album="${known.album?.title ?? "?"}" remastered=${isTrackRemastered(known)} isBetter=${isBetter(it.track.item, known)}`);
-					}
-					for (const r of isrcResults) {
-						if (r.id === originalId || excludeIds.has(r.id)) continue;
-						if (isBetter(it.track.item, r) && !shouldSkipUpgrade(target.uuid, originalId, r.id, existingIds)) {
-							console.log(`${dbg} ISRC match: ${r.id} "${r.title}" v="${r.version ?? ""}" q=${r.audioQuality}`);
-							allAlternatives.push({ track: toTrackItem(r), isFromLuna: false });
-							excludeIds.add(r.id);
-						}
+				// Search by title/artist to find remasters, higher quality, and alternatives
+				const searchResults = await findAlternativesViaSearch(it.track.item, excludeIds, signal);
+				const alternatives: TidalSearchResult[] = [];
+				for (const r of searchResults) {
+					if (!shouldSkipUpgrade(target.uuid, originalId, r.id, existingIds)) {
+						alternatives.push(r);
 					}
 				}
 
-				if (!signal?.aborted) await delay(100);
-
-				// Third pass: title/artist search (finds different-ISRC alternatives, remasters from other albums)
-				if (!signal?.aborted) {
-					const searchResults = await findAlternativesViaSearch(it.track.item, excludeIds, signal);
-					console.log(`${dbg} search → ${searchResults.length} candidate(s)`, searchResults.map((r) => `${r.id} "${r.title}" v="${r.version ?? ""}" q=${r.audioQuality}`));
-					for (const r of searchResults) {
-						if (!shouldSkipUpgrade(target.uuid, originalId, r.id, existingIds)) {
-							allAlternatives.push({ track: toTrackItem(r), isFromLuna: false });
-						} else {
-							console.log(`${dbg} search candidate ${r.id} skipped by cache`);
-						}
-					}
-				}
-
-				if (allAlternatives.length > 0) {
-					// Convert all to TidalSearchResult for consistent ranking
-					const asSearchResults: TidalSearchResult[] = allAlternatives.map((a) => ({
-						id: a.track.item.id,
-						title: a.track.item.title,
-						version: a.track.item.version,
-						duration: a.track.item.duration,
-						isrc: a.track.item.isrc,
-						artists: a.track.item.artists,
-						album: a.track.item.album,
-						audioQuality: a.track.item.audioQuality,
-						streamStartDate: a.track.item.streamStartDate,
-					}));
-					const ranked = rankAlternatives(asSearchResults);
+				if (alternatives.length > 0) {
+					const ranked = rankAlternatives(alternatives);
 					const choices: TrackChoice[] = [
 						{ index: it.index, track: it, keep: false },
 						...ranked.map((alt, i) => ({
@@ -375,7 +293,7 @@ export async function scanForUpgrades(
 					const visible = hasVisibleImprovement(current, c);
 					if (!visible) {
 						const alt = c.track.track.item;
-						console.log(`[upgrade:${current.track.track.item.id}] filtered out alt ${alt.id} "${alt.title}" v="${alt.version ?? ""}" — no visible improvement`);
+						console.debug(`[upgrade:${current.track.track.item.id}] filtered out alt ${alt.id} "${alt.title}" v="${alt.version ?? ""}" — no visible improvement`);
 					}
 					return visible;
 				});
@@ -394,6 +312,10 @@ export async function scanForUpgrades(
 			onStatus(`No alternatives found in "${target.title}"`);
 		}
 	}
+
+	const hits = getRateLimitHits();
+	if (hits > 0) console.log(`[upgrade] Scan complete. Rate limited ${hits} time(s).`);
+	else console.log(`[upgrade] Scan complete. No rate limiting encountered.`);
 
 	return results;
 }

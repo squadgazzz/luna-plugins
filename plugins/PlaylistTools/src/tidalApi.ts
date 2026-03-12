@@ -214,13 +214,20 @@ export async function isrcLookupAll(isrc: string): Promise<TidalSearchResult[]> 
 	return results;
 }
 
+let rateLimitHits = 0;
+
+export function getRateLimitHits(): number { return rateLimitHits; }
+export function resetRateLimitHits(): void { rateLimitHits = 0; }
+
 async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
 	for (let attempt = 0; attempt <= maxRetries; attempt++) {
 		const res = await fetch(url, init);
 		if (res.status !== 429 || attempt === maxRetries) return res;
+		rateLimitHits++;
 		const retryAfter = res.headers.get("Retry-After");
 		const jitter = Math.random() * 500;
 		const delay = (retryAfter ? parseInt(retryAfter, 10) * 1000 : 1000 * Math.pow(2, attempt)) + jitter;
+		console.log(`[429] Rate limited (hit #${rateLimitHits}), retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${maxRetries})`);
 		await new Promise((r) => setTimeout(r, delay));
 		if (init.signal?.aborted) throw new DOMException("Cancelled", "AbortError");
 	}
@@ -231,11 +238,11 @@ export async function searchTracks(query: string, signal?: AbortSignal): Promise
 	const headers = await TidalApi.getAuthHeaders();
 	const queryArgs = TidalApi.queryArgs();
 	const res = await fetchWithRetry(
-		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=50`,
+		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`,
 		{ headers, signal },
 	);
 	if (!res.ok) {
-		console.log(`[searchTracks] FAILED query="${query}" status=${res.status}`);
+		console.debug(`[searchTracks] FAILED query="${query}" status=${res.status}`);
 		return [];
 	}
 	const data = await res.json();
@@ -250,7 +257,7 @@ export async function searchTracks(query: string, signal?: AbortSignal): Promise
 		audioQuality: t.audioQuality ?? undefined,
 		streamStartDate: t.streamStartDate ?? undefined,
 	}));
-	console.log(`[searchTracks] query="${query}" → ${items.length} results`);
+	console.debug(`[searchTracks] query="${query}" → ${items.length} results`);
 	return items;
 }
 
