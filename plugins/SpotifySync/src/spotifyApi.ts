@@ -35,27 +35,48 @@ export interface SpotifyPlaylist {
 
 // --- Internal helpers ---
 
-async function spotifyFetch(url: string, signal?: AbortSignal, retries = 5): Promise<Response> {
-	await ensureValidToken();
-	const response = await fetch(url, {
-		headers: { Authorization: "Bearer " + accessToken },
-		signal,
-	});
-
-	if (response.status === 429) {
-		if (retries <= 0) {
-			throw new Error("Spotify rate limit exceeded after all retries");
+async function spotifyFetch(url: string, signal?: AbortSignal, maxRetries = 5): Promise<Response> {
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		await ensureValidToken();
+		let res: Response;
+		try {
+			res = await fetch(url, {
+				headers: { Authorization: "Bearer " + accessToken },
+				signal,
+			});
+		} catch (err) {
+			if (err instanceof DOMException && err.name === "AbortError") throw err;
+			if (attempt === maxRetries) throw err;
+			const jitter = Math.random() * 500;
+			const delay = 1000 * Math.pow(2, attempt) + jitter;
+			console.log(`[SpotifySync][Spotify] Network error, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${maxRetries})`);
+			await new Promise((r) => setTimeout(r, delay));
+			if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+			continue;
 		}
-		const retryAfter = Number(response.headers.get("Retry-After") ?? "1");
-		await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
-		return spotifyFetch(url, signal, retries - 1);
+		if (res.status === 429) {
+			if (attempt === maxRetries) throw new Error("Spotify rate limit exceeded after all retries");
+			const retryAfter = Number(res.headers.get("Retry-After") ?? "1");
+			const jitter = Math.random() * 500;
+			const delay = retryAfter * 1000 + jitter;
+			console.log(`[SpotifySync][Spotify][429] Rate limited, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${maxRetries})`);
+			await new Promise((r) => setTimeout(r, delay));
+			if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+			continue;
+		}
+		if (res.status >= 500) {
+			if (attempt === maxRetries) throw new Error(`Spotify API error: ${res.status} ${res.statusText}`);
+			const jitter = Math.random() * 500;
+			const delay = 1000 * Math.pow(2, attempt) + jitter;
+			console.log(`[SpotifySync][Spotify][${res.status}] Server error, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${maxRetries})`);
+			await new Promise((r) => setTimeout(r, delay));
+			if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+			continue;
+		}
+		if (!res.ok) throw new Error(`Spotify API error: ${res.status} ${res.statusText}`);
+		return res;
 	}
-
-	if (!response.ok) {
-		throw new Error(`Spotify API error: ${response.status} ${response.statusText}`);
-	}
-
-	return response;
+	throw new Error("Unreachable");
 }
 
 async function fetchAllPages<T>(

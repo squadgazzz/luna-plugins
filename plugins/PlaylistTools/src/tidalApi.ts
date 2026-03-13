@@ -1,4 +1,5 @@
 import { redux, TidalApi } from "@luna/lib";
+import { fetchWithRetry } from "../../../lib/retry";
 
 import type { TrackItem } from "./detection";
 
@@ -219,20 +220,7 @@ let rateLimitHits = 0;
 export function getRateLimitHits(): number { return rateLimitHits; }
 export function resetRateLimitHits(): void { rateLimitHits = 0; }
 
-async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
-	for (let attempt = 0; attempt <= maxRetries; attempt++) {
-		const res = await fetch(url, init);
-		if (res.status !== 429 || attempt === maxRetries) return res;
-		rateLimitHits++;
-		const retryAfter = res.headers.get("Retry-After");
-		const jitter = Math.random() * 500;
-		const delay = (retryAfter ? parseInt(retryAfter, 10) * 1000 : 1000 * Math.pow(2, attempt)) + jitter;
-		console.log(`[429] Rate limited (hit #${rateLimitHits}), retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${maxRetries})`);
-		await new Promise((r) => setTimeout(r, delay));
-		if (init.signal?.aborted) throw new DOMException("Cancelled", "AbortError");
-	}
-	throw new Error("Unreachable");
-}
+const retryOptions = { tag: "PlaylistTools", onRateLimit: () => { rateLimitHits++; } };
 
 export async function searchTracks(query: string, signal?: AbortSignal): Promise<TidalSearchResult[]> {
 	const headers = await TidalApi.getAuthHeaders();
@@ -240,6 +228,7 @@ export async function searchTracks(query: string, signal?: AbortSignal): Promise
 	const res = await fetchWithRetry(
 		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`,
 		{ headers, signal },
+		retryOptions,
 	);
 	if (!res.ok) {
 		console.debug(`[searchTracks] FAILED query="${query}" status=${res.status}`);

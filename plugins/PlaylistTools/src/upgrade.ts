@@ -169,20 +169,7 @@ function hasVisibleImprovement(current: TrackChoice, alternative: TrackChoice): 
 	return false;
 }
 
-class Semaphore {
-	private queue: (() => void)[] = [];
-	private count: number;
-	constructor(max: number) { this.count = max; }
-	async acquire(): Promise<void> {
-		if (this.count > 0) { this.count--; return; }
-		return new Promise((resolve) => this.queue.push(() => { this.count--; resolve(); }));
-	}
-	release(): void {
-		this.count++;
-		const next = this.queue.shift();
-		if (next) next();
-	}
-}
+import { Semaphore } from "../../../lib/retry";
 
 
 export async function scanForUpgrades(

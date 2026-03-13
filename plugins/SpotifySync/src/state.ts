@@ -1,3 +1,7 @@
+import type { LunaUnload } from "@luna/core";
+
+export const unloads = new Set<LunaUnload>();
+
 const STORAGE_PREFIX = "spotifySync:";
 
 export let clientId = localStorage.getItem(`${STORAGE_PREFIX}clientId`) ?? "";

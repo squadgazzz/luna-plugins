@@ -21,7 +21,7 @@ import {
 } from "./state";
 import type { SimilarDecision } from "./state";
 import { startAuthFlow } from "./spotifyAuth";
-import { unloads as pluginUnloads } from "./index";
+import { unloads as pluginUnloads } from "./state";
 import { getPlaylists, getMe, type SpotifyPlaylist } from "./spotifyApi";
 import { fetchUserPlaylists, type TidalPlaylist } from "./tidalApi";
 import { prepareAll, executeAll, type SyncPrepResult, type SyncPlaylistResult, type ProgressInfo } from "./sync";

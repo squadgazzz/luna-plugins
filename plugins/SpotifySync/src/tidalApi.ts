@@ -1,4 +1,5 @@
 import { redux, TidalApi } from "@luna/lib";
+import { Semaphore, fetchWithRetry } from "../../../lib/retry";
 
 export interface TidalPlaylist {
 	uuid: string;
@@ -16,13 +17,7 @@ export interface TidalTrackInfo {
 	artists: { name: string }[];
 }
 
-async function fetchWithRetry(url: string, init: RequestInit, retries = 3): Promise<Response> {
-	for (let attempt = 0; ; attempt++) {
-		const res = await fetch(url, init);
-		if (res.ok || attempt >= retries) return res;
-		await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
-	}
-}
+const retryOptions = { tag: "SpotifySync" };
 
 function getUserId(): number | null {
 	const state = redux.store.getState();
@@ -48,6 +43,7 @@ export async function fetchPlaylistTracks(playlistUUID: string, signal?: AbortSi
 	const res = await fetchWithRetry(
 		`https://api.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}&limit=-1`,
 		{ headers, signal },
+		retryOptions,
 	);
 	if (!res.ok) throw new Error(`Failed to fetch playlist items: ${res.status}`);
 	const data = (await res.json()) as { items: { item: TidalTrackInfo | null }[] };
@@ -137,6 +133,7 @@ export async function fetchFavoriteTracks(onProgress?: (message: string) => void
 		const res = await fetchWithRetry(
 			`https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
 			{ headers, signal },
+			retryOptions,
 		);
 		if (!res.ok) throw new Error(`Failed to fetch favorites: ${res.status}`);
 		const data = (await res.json()) as { totalNumberOfItems?: number; items: { item: TidalTrackInfo | null }[] };
@@ -161,43 +158,42 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 
 	const headers = await TidalApi.getAuthHeaders();
 	const queryArgs = TidalApi.queryArgs();
-
-	const addOne = async (trackId: number) => {
-		const res = await fetch(`https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}`, {
-			method: "POST",
-			headers: {
-				...headers,
-				"Content-Type": "application/x-www-form-urlencoded",
-			},
-			body: `trackId=${trackId}`,
-			signal,
-		});
-		if (!res.ok) throw new Error(`Failed to add track to favorites: ${res.status}`);
-	};
+	const url = `https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}`;
+	const postInit = (body: string): RequestInit => ({
+		method: "POST",
+		headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+		body,
+		signal,
+	});
 
 	if (parallel) {
 		const chunkSize = 20;
+		const sem = new Semaphore(3);
 		let added = 0;
+
+		const chunks: number[][] = [];
 		for (let i = 0; i < trackIds.length; i += chunkSize) {
-			if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
-			const batch = trackIds.slice(i, i + chunkSize);
-			const res = await fetch(`https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}`, {
-				method: "POST",
-				headers: {
-					...headers,
-					"Content-Type": "application/x-www-form-urlencoded",
-				},
-				body: `trackId=${batch.join(",")}`,
-				signal,
-			});
-			if (!res.ok) throw new Error(`Failed to add tracks to favorites: ${res.status}`);
-			added += batch.length;
-			onProgress?.(added, trackIds.length);
+			chunks.push(trackIds.slice(i, i + chunkSize));
 		}
+
+		await Promise.all(chunks.map(async (batch) => {
+			if (signal?.aborted) return;
+			await sem.acquire();
+			try {
+				if (signal?.aborted) return;
+				const res = await fetchWithRetry(url, postInit(`trackId=${batch.join(",")}`), retryOptions);
+				if (!res.ok) throw new Error(`Failed to add tracks to favorites: ${res.status}`);
+				added += batch.length;
+				onProgress?.(added, trackIds.length);
+			} finally {
+				sem.release();
+			}
+		}));
 	} else {
 		for (let i = 0; i < trackIds.length; i++) {
 			if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
-			await addOne(trackIds[i]);
+			const res = await fetchWithRetry(url, postInit(`trackId=${trackIds[i]}`), retryOptions);
+			if (!res.ok) throw new Error(`Failed to add track to favorites: ${res.status}`);
 			onProgress?.(i + 1, trackIds.length);
 		}
 	}

@@ -1,7 +1,11 @@
 import React, { useRef, useState } from "react";
 import { redux, TidalApi } from "@luna/lib";
+import { Semaphore, fetchWithRetry } from "../../../lib/retry";
 
 const CONFIRM_TEXT = "DELETE ALL";
+
+let rateLimitHits = 0;
+const retryOptions = { tag: "ClearFavorites", onRateLimit: () => { rateLimitHits++; } };
 
 function getUserId(): number | null {
 	const state = redux.store.getState();
@@ -21,9 +25,10 @@ async function fetchFavoriteTrackIds(signal: AbortSignal): Promise<number[]> {
 
 	while (offset < total) {
 		if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
-		const res = await fetch(
+		const res = await fetchWithRetry(
 			`https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
 			{ headers, signal },
+			retryOptions,
 		);
 		if (!res.ok) throw new Error(`Failed to fetch favorites: ${res.status}`);
 		const data = (await res.json()) as { totalNumberOfItems?: number; items: { item: { id: number } }[] };
@@ -48,38 +53,31 @@ async function deleteAllFavorites(onProgress: (done: number, total: number) => v
 
 	const headers = await TidalApi.getAuthHeaders();
 	const queryArgs = TidalApi.queryArgs();
-	const maxConcurrency = 10;
+	const sem = new Semaphore(3);
 	let done = 0;
-	let running = 0;
-	let idx = 0;
+	rateLimitHits = 0;
 
-	await new Promise<void>((resolve, reject) => {
-		const launch = () => {
-			while (running < maxConcurrency && idx < trackIds.length && !signal.aborted) {
-				const trackId = trackIds[idx++];
-				running++;
-				fetch(`https://api.tidal.com/v1/users/${userId}/favorites/tracks/${trackId}?${queryArgs}`, {
-					method: "DELETE",
-					headers,
-					signal,
-				})
-					.catch(() => {})
-					.finally(() => {
-						running--;
-						done++;
-						onProgress(done, trackIds.length);
-						if (signal.aborted && running === 0) {
-							reject(new DOMException("Cancelled", "AbortError"));
-						} else if (done === trackIds.length) {
-							resolve();
-						} else {
-							launch();
-						}
-					});
-			}
-		};
-		launch();
-	});
+	const deleteOne = async (trackId: number) => {
+		if (signal.aborted) return;
+		await sem.acquire();
+		try {
+			if (signal.aborted) return;
+			const res = await fetchWithRetry(
+				`https://api.tidal.com/v1/users/${userId}/favorites/tracks/${trackId}?${queryArgs}`,
+				{ method: "DELETE", headers, signal },
+				retryOptions,
+			);
+			if (!res.ok) console.warn(`[ClearFavorites] Failed to delete track ${trackId}: ${res.status}`);
+		} finally {
+			sem.release();
+			done++;
+			onProgress(done, trackIds.length);
+		}
+	};
+
+	await Promise.all(trackIds.map((id) => deleteOne(id)));
+
+	if (rateLimitHits > 0) console.log(`[ClearFavorites] Done. Rate limited ${rateLimitHits} time(s).`);
 
 	return done;
 }

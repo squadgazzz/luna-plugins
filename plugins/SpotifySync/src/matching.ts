@@ -10,6 +10,8 @@ interface TidalTrackResult {
 	duration: number;
 	isrc?: string;
 	artists: { name: string }[];
+	album?: { title: string };
+	audioQuality?: string;
 }
 
 // --- String helpers (ported from sync.py) ---
@@ -32,6 +34,39 @@ function splitArtists(name: string): string[] {
 	if (name.includes("&")) return name.split("&").map((s) => s.trim());
 	if (name.includes(",")) return name.split(",").map((s) => s.trim());
 	return [name];
+}
+
+// --- Quality ranking ---
+
+const QUALITY_RANK: Record<string, number> = {
+	HI_RES_LOSSLESS: 5,
+	HI_RES: 4,
+	LOSSLESS: 3,
+	HIGH: 2,
+	LOW: 1,
+};
+
+function qualityRank(quality?: string): number {
+	return QUALITY_RANK[quality ?? ""] ?? 0;
+}
+
+// --- Album matching ---
+
+function albumMatch(tidalAlbumTitle: string | undefined, spotifyAlbumName: string): boolean {
+	if (!tidalAlbumTitle) return false;
+	const tidalSimple = simple(tidalAlbumTitle.toLowerCase());
+	const spotifySimple = simple(spotifyAlbumName.toLowerCase());
+	return tidalSimple === spotifySimple || normalize(tidalSimple) === normalize(spotifySimple);
+}
+
+/** Select best track from candidates: prefer album match, then highest quality */
+function selectBestTrack(candidates: TidalTrackResult[], spotifyTrack: SpotifyTrack): TidalTrackResult | null {
+	if (candidates.length === 0) return null;
+	if (candidates.length === 1) return candidates[0];
+
+	const albumMatches = candidates.filter((t) => albumMatch(t.album?.title, spotifyTrack.album.name));
+	const pool = albumMatches.length > 0 ? albumMatches : candidates;
+	return pool.reduce((best, t) => (qualityRank(t.audioQuality) > qualityRank(best.audioQuality) ? t : best));
 }
 
 // --- Match functions ---
@@ -93,25 +128,28 @@ function matchTrack(tidal: TidalTrackResult, spotify: SpotifyTrack): boolean {
 	);
 }
 
-// --- ISRC lookup via TidalApi ---
+// --- Search via Tidal search API ---
 
-async function isrcLookup(isrc: string): Promise<TidalTrackResult | null> {
-	try {
-		for await (const track of TidalApi.isrc(isrc)) {
-			return track as unknown as TidalTrackResult;
-		}
-	} catch {
-		/* no match */
+async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		const res = await fetch(url, init);
+		if (res.status !== 429 || attempt === maxRetries) return res;
+		const retryAfter = res.headers.get("Retry-After");
+		const jitter = Math.random() * 500;
+		const delay = (retryAfter ? parseInt(retryAfter, 10) * 1000 : 1000 * Math.pow(2, attempt)) + jitter;
+		await new Promise((r) => setTimeout(r, delay));
+		if (init.signal?.aborted) throw new DOMException("Cancelled", "AbortError");
 	}
-	return null;
+	throw new Error("Unreachable");
 }
-
-// --- Search fallback via Tidal search API ---
 
 async function searchTidal(query: string, signal?: AbortSignal): Promise<TidalTrackResult[]> {
 	const headers = await TidalApi.getAuthHeaders();
 	const queryArgs = TidalApi.queryArgs();
-	const res = await fetch(`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`, { headers, signal });
+	const res = await fetchWithRetry(
+		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`,
+		{ headers, signal },
+	);
 	if (!res.ok) return [];
 	const data = await res.json();
 	return (data.items ?? []) as TidalTrackResult[];
@@ -163,21 +201,15 @@ export async function matchSpotifyTrack(spotifyTrack: SpotifyTrack, sem: Semapho
 	try {
 		if (signal?.aborted) return null;
 
-		// Phase 1: ISRC lookup
-		const isrc = spotifyTrack.external_ids?.isrc;
-		if (isrc) {
-			const result = await isrcLookup(isrc);
-			if (result) return { id: result.id, isrc: result.isrc ?? null };
-		}
+		// Stagger requests to avoid bursts
+		await new Promise((r) => setTimeout(r, 100));
 
-		if (signal?.aborted) return null;
-
-		// Phase 2: Search fallback
+		// Search by title/artist, then pick best match (album match > quality)
 		const query = `${simple(spotifyTrack.name)} ${simple(spotifyTrack.artists[0].name)}`;
 		const results = await searchTidal(query, signal);
-		for (const track of results) {
-			if (matchTrack(track, spotifyTrack)) return { id: track.id, isrc: track.isrc ?? null };
-		}
+		const candidates = results.filter((track) => matchTrack(track, spotifyTrack));
+		const best = selectBestTrack(candidates, spotifyTrack);
+		if (best) return { id: best.id, isrc: best.isrc ?? null };
 	} finally {
 		sem.release();
 	}
@@ -192,7 +224,7 @@ export async function matchAllTracks(
 	signal?: AbortSignal,
 	matchCache?: Record<string, number>,
 ): Promise<MatchResult[]> {
-	const sem = new Semaphore(10);
+	const sem = new Semaphore(3);
 	const results: MatchResult[] = new Array(spotifyTracks.length);
 	const unmatched: string[] = [];
 	let matched = 0;
