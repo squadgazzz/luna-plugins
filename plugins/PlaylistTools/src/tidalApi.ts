@@ -220,7 +220,7 @@ let rateLimitHits = 0;
 export function getRateLimitHits(): number { return rateLimitHits; }
 export function resetRateLimitHits(): void { rateLimitHits = 0; }
 
-const retryOptions = { tag: "PlaylistTools", onRateLimit: () => { rateLimitHits++; } };
+const retryOptions = { tag: "PlaylistTools", maxRateLimitRetries: Infinity, onRateLimit: () => { rateLimitHits++; } };
 
 export async function searchTracks(query: string, signal?: AbortSignal): Promise<TidalSearchResult[]> {
 	const headers = await TidalApi.getAuthHeaders();

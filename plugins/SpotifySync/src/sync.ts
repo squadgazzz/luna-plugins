@@ -291,7 +291,7 @@ async function preparePlaylistSync(
 
 	// 3. Match all tracks
 	onProgress(`Matching tracks for "${name}"...`);
-	const matchResults = await matchAllTracks(spotifyTracks, existingTrackIds, (matched, total, unmatchedList) => {
+	const matchResults = await matchAllTracks(spotifyTracks, (matched, total, unmatchedList) => {
 		onProgress(`Matching "${name}": ${matched}/${total} matched, ${unmatchedList.length} unmatched`, { current: matched, total });
 	}, signal, matchCache);
 
@@ -422,7 +422,7 @@ async function prepareFavoritesSync(
 
 	// 3. Match tracks
 	onProgress("Matching liked tracks...");
-	const matchResults = await matchAllTracks(spotifyTracks, existingTrackIds, (matched, total, unmatchedList) => {
+	const matchResults = await matchAllTracks(spotifyTracks, (matched, total, unmatchedList) => {
 		onProgress(`Matching favorites: ${matched}/${total} matched, ${unmatchedList.length} unmatched`, { current: matched, total });
 	}, signal, matchCache);
 

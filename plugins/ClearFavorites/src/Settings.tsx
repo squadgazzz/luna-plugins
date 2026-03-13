@@ -5,7 +5,7 @@ import { Semaphore, fetchWithRetry } from "../../../lib/retry";
 const CONFIRM_TEXT = "DELETE ALL";
 
 let rateLimitHits = 0;
-const retryOptions = { tag: "ClearFavorites", onRateLimit: () => { rateLimitHits++; } };
+const retryOptions = { tag: "ClearFavorites", maxRateLimitRetries: Infinity, onRateLimit: () => { rateLimitHits++; } };
 
 function getUserId(): number | null {
 	const state = redux.store.getState();

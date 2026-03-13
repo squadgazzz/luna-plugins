@@ -17,7 +17,14 @@ export interface TidalTrackInfo {
 	artists: { name: string }[];
 }
 
-const retryOptions = { tag: "SpotifySync" };
+let rateLimitHits = 0;
+const retryOptions = { tag: "SpotifySync", maxRateLimitRetries: Infinity, onRateLimit: () => { rateLimitHits++; } };
+
+function resetAndGetRateLimitHits(): number {
+	const hits = rateLimitHits;
+	rateLimitHits = 0;
+	return hits;
+}
 
 function getUserId(): number | null {
 	const state = redux.store.getState();
@@ -60,6 +67,7 @@ export async function addTracksToPlaylist(playlistUUID: string, trackIds: number
 	const chunkSize = 20;
 	const total = trackIds.length;
 	let added = 0;
+	rateLimitHits = 0;
 
 	for (let i = 0; i < total; i += chunkSize) {
 		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
@@ -69,14 +77,14 @@ export async function addTracksToPlaylist(playlistUUID: string, trackIds: number
 		const queryArgs = TidalApi.queryArgs();
 
 		// Get ETag
-		const playlistRes = await fetch(`https://api.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers, signal });
+		const playlistRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers, signal }, retryOptions);
 		if (!playlistRes.ok) throw new Error(`Failed to fetch playlist for ETag: ${playlistRes.status}`);
 
 		const etag = playlistRes.headers.get("etag");
 		if (etag === null) throw new Error("Failed to get ETag from playlist response");
 
 		// Add tracks
-		const addRes = await fetch(`https://api.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}`, {
+		const addRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}`, {
 			method: "POST",
 			headers: {
 				...headers,
@@ -85,12 +93,15 @@ export async function addTracksToPlaylist(playlistUUID: string, trackIds: number
 			},
 			body: `trackIds=${batch.join(",")}&onDupes=SKIP`,
 			signal,
-		});
+		}, retryOptions);
 		if (!addRes.ok) throw new Error(`Failed to add tracks to playlist: ${addRes.status}`);
 
 		added += batch.length;
 		onProgress?.(added, total);
 	}
+
+	const hits = resetAndGetRateLimitHits();
+	if (hits > 0) console.log(`[SpotifySync] Adding to playlist complete. Total 429 rate limit hits: ${hits}`);
 }
 
 export async function createPlaylist(title: string, description?: string): Promise<string> {
@@ -166,6 +177,8 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 		signal,
 	});
 
+	rateLimitHits = 0;
+
 	if (parallel) {
 		const chunkSize = 20;
 		const sem = new Semaphore(3);
@@ -197,6 +210,9 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 			onProgress?.(i + 1, trackIds.length);
 		}
 	}
+
+	const hits = resetAndGetRateLimitHits();
+	if (hits > 0) console.log(`[SpotifySync] Adding favorites complete. Total 429 rate limit hits: ${hits}`);
 }
 
 export async function removeFromPlaylist(playlistUUID: string, removeIndices: number[], signal?: AbortSignal): Promise<boolean> {

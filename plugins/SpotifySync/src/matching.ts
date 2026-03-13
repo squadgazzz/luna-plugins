@@ -1,4 +1,5 @@
 import { TidalApi } from "@luna/lib";
+import { Semaphore, fetchWithRetry } from "../../../lib/retry";
 import type { SpotifyTrack } from "./spotifyApi";
 
 // --- Internal types ---
@@ -128,19 +129,29 @@ function matchTrack(tidal: TidalTrackResult, spotify: SpotifyTrack): boolean {
 	);
 }
 
-// --- Search via Tidal search API ---
+// --- Search via Tidal search API (with shared backoff across concurrent requests) ---
 
-async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
-	for (let attempt = 0; attempt <= maxRetries; attempt++) {
-		const res = await fetch(url, init);
-		if (res.status !== 429 || attempt === maxRetries) return res;
-		const retryAfter = res.headers.get("Retry-After");
-		const jitter = Math.random() * 500;
-		const delay = (retryAfter ? parseInt(retryAfter, 10) * 1000 : 1000 * Math.pow(2, attempt)) + jitter;
-		await new Promise((r) => setTimeout(r, delay));
-		if (init.signal?.aborted) throw new DOMException("Cancelled", "AbortError");
-	}
-	throw new Error("Unreachable");
+let rateLimitHits = 0;
+let sharedPauseUntil = 0;
+
+function onRateLimit(): void {
+	rateLimitHits++;
+	// Pause ALL concurrent requests — not just the one that got 429'd
+	sharedPauseUntil = Math.max(sharedPauseUntil, Date.now() + 3000);
+}
+
+async function beforeFetch(): Promise<void> {
+	const delay = sharedPauseUntil - Date.now();
+	if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+}
+
+function resetRateLimitState(): void {
+	rateLimitHits = 0;
+	sharedPauseUntil = 0;
+}
+
+function getRateLimitHits(): number {
+	return rateLimitHits;
 }
 
 async function searchTidal(query: string, signal?: AbortSignal): Promise<TidalTrackResult[]> {
@@ -149,37 +160,11 @@ async function searchTidal(query: string, signal?: AbortSignal): Promise<TidalTr
 	const res = await fetchWithRetry(
 		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`,
 		{ headers, signal },
+		{ tag: "SpotifySync", maxRateLimitRetries: Infinity, onRateLimit, beforeFetch },
 	);
 	if (!res.ok) return [];
 	const data = await res.json();
 	return (data.items ?? []) as TidalTrackResult[];
-}
-
-// --- Exported types and classes ---
-
-export class Semaphore {
-	private queue: (() => void)[] = [];
-	private count: number;
-	constructor(max: number) {
-		this.count = max;
-	}
-	async acquire(): Promise<void> {
-		if (this.count > 0) {
-			this.count--;
-			return;
-		}
-		return new Promise((resolve) =>
-			this.queue.push(() => {
-				this.count--;
-				resolve();
-			}),
-		);
-	}
-	release(): void {
-		this.count++;
-		const next = this.queue.shift();
-		if (next) next();
-	}
 }
 
 export interface TidalMatch {
@@ -202,7 +187,7 @@ export async function matchSpotifyTrack(spotifyTrack: SpotifyTrack, sem: Semapho
 		if (signal?.aborted) return null;
 
 		// Stagger requests to avoid bursts
-		await new Promise((r) => setTimeout(r, 100));
+		await new Promise((r) => setTimeout(r, 50));
 
 		// Search by title/artist, then pick best match (album match > quality)
 		const query = `${simple(spotifyTrack.name)} ${simple(spotifyTrack.artists[0].name)}`;
@@ -219,12 +204,12 @@ export async function matchSpotifyTrack(spotifyTrack: SpotifyTrack, sem: Semapho
 
 export async function matchAllTracks(
 	spotifyTracks: SpotifyTrack[],
-	existingTidalTrackIds: Set<number>,
 	onProgress?: (matched: number, total: number, unmatched: string[]) => void,
 	signal?: AbortSignal,
 	matchCache?: Record<string, number>,
 ): Promise<MatchResult[]> {
-	const sem = new Semaphore(3);
+	resetRateLimitState();
+	const sem = new Semaphore(5);
 	const results: MatchResult[] = new Array(spotifyTracks.length);
 	const unmatched: string[] = [];
 	let matched = 0;
@@ -234,7 +219,7 @@ export async function matchAllTracks(
 		if (signal?.aborted) return;
 		const st = spotifyTracks[i];
 
-		// Check match cache first
+		// Check match cache first — skip API search if we already know the Tidal ID
 		if (st.id && matchCache && st.id in matchCache) {
 			const cachedId = matchCache[st.id];
 			results[i] = { spotifyTrack: st, tidalMatch: { id: cachedId, isrc: null } };
@@ -268,5 +253,11 @@ export async function matchAllTracks(
 	await Promise.all(spotifyTracks.map((_, i) => matchOne(i)));
 
 	if (signal?.aborted) throw new DOMException("Sync cancelled", "AbortError");
+
+	const totalHits = getRateLimitHits();
+	if (totalHits > 0) {
+		console.log(`[SpotifySync] Matching complete. Total 429 rate limit hits: ${totalHits}`);
+	}
+
 	return results;
 }
