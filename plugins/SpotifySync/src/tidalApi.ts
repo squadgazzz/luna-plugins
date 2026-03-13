@@ -18,11 +18,24 @@ export interface TidalTrackInfo {
 }
 
 let rateLimitHits = 0;
-const retryOptions = { tag: "SpotifySync", maxRateLimitRetries: Infinity, onRateLimit: () => { rateLimitHits++; } };
+let sharedPauseUntil = 0;
+const retryOptions = {
+	tag: "SpotifySync",
+	maxRateLimitRetries: Infinity,
+	onRateLimit: () => {
+		rateLimitHits++;
+		sharedPauseUntil = Math.max(sharedPauseUntil, Date.now() + 3000);
+	},
+	beforeFetch: async () => {
+		const delay = sharedPauseUntil - Date.now();
+		if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+	},
+};
 
 function resetAndGetRateLimitHits(): number {
 	const hits = rateLimitHits;
 	rateLimitHits = 0;
+	sharedPauseUntil = 0;
 	return hits;
 }
 

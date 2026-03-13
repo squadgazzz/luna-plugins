@@ -5,7 +5,19 @@ import { Semaphore, fetchWithRetry } from "../../../lib/retry";
 const CONFIRM_TEXT = "DELETE ALL";
 
 let rateLimitHits = 0;
-const retryOptions = { tag: "ClearFavorites", maxRateLimitRetries: Infinity, onRateLimit: () => { rateLimitHits++; } };
+let sharedPauseUntil = 0;
+const retryOptions = {
+	tag: "ClearFavorites",
+	maxRateLimitRetries: Infinity,
+	onRateLimit: () => {
+		rateLimitHits++;
+		sharedPauseUntil = Math.max(sharedPauseUntil, Date.now() + 3000);
+	},
+	beforeFetch: async () => {
+		const delay = sharedPauseUntil - Date.now();
+		if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+	},
+};
 
 function getUserId(): number | null {
 	const state = redux.store.getState();
@@ -56,6 +68,7 @@ async function deleteAllFavorites(onProgress: (done: number, total: number) => v
 	const sem = new Semaphore(3);
 	let done = 0;
 	rateLimitHits = 0;
+	sharedPauseUntil = 0;
 
 	const deleteOne = async (trackId: number) => {
 		if (signal.aborted) return;
