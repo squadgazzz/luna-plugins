@@ -1,5 +1,5 @@
 import { TidalApi } from "@luna/lib";
-import { Semaphore, fetchWithRetry } from "../../../lib/retry";
+import { Semaphore, RateLimitTracker, fetchWithRetry } from "../../../lib/retry";
 import type { SpotifyTrack } from "./spotifyApi";
 
 // --- Internal types ---
@@ -129,30 +129,9 @@ function matchTrack(tidal: TidalTrackResult, spotify: SpotifyTrack): boolean {
 	);
 }
 
-// --- Search via Tidal search API (with shared backoff across concurrent requests) ---
+// --- Search via Tidal search API ---
 
-let rateLimitHits = 0;
-let sharedPauseUntil = 0;
-
-function onRateLimit(): void {
-	rateLimitHits++;
-	// Pause ALL concurrent requests — not just the one that got 429'd
-	sharedPauseUntil = Math.max(sharedPauseUntil, Date.now() + 3000);
-}
-
-async function beforeFetch(): Promise<void> {
-	const delay = sharedPauseUntil - Date.now();
-	if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-}
-
-function resetRateLimitState(): void {
-	rateLimitHits = 0;
-	sharedPauseUntil = 0;
-}
-
-function getRateLimitHits(): number {
-	return rateLimitHits;
-}
+const rateLimit = new RateLimitTracker("SpotifySync");
 
 async function searchTidal(query: string, signal?: AbortSignal): Promise<TidalTrackResult[]> {
 	const headers = await TidalApi.getAuthHeaders();
@@ -160,7 +139,7 @@ async function searchTidal(query: string, signal?: AbortSignal): Promise<TidalTr
 	const res = await fetchWithRetry(
 		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`,
 		{ headers, signal },
-		{ tag: "SpotifySync", maxRateLimitRetries: Infinity, onRateLimit, beforeFetch },
+		rateLimit.retryOptions,
 	);
 	if (!res.ok) return [];
 	const data = await res.json();
@@ -208,7 +187,7 @@ export async function matchAllTracks(
 	signal?: AbortSignal,
 	matchCache?: Record<string, number>,
 ): Promise<MatchResult[]> {
-	resetRateLimitState();
+	rateLimit.reset();
 	const sem = new Semaphore(5);
 	const results: MatchResult[] = new Array(spotifyTracks.length);
 	const unmatched: string[] = [];
@@ -254,7 +233,7 @@ export async function matchAllTracks(
 
 	if (signal?.aborted) throw new DOMException("Sync cancelled", "AbortError");
 
-	const totalHits = getRateLimitHits();
+	const totalHits = rateLimit.hits;
 	if (totalHits > 0) {
 		console.log(`[SpotifySync] Matching complete. Total 429 rate limit hits: ${totalHits}`);
 	}

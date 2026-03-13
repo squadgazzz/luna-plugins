@@ -1,5 +1,5 @@
 import { redux, TidalApi } from "@luna/lib";
-import { Semaphore, fetchWithRetry } from "../../../lib/retry";
+import { Semaphore, RateLimitTracker, fetchWithRetry } from "../../../lib/retry";
 
 export interface TidalPlaylist {
 	uuid: string;
@@ -17,27 +17,7 @@ export interface TidalTrackInfo {
 	artists: { name: string }[];
 }
 
-let rateLimitHits = 0;
-let sharedPauseUntil = 0;
-const retryOptions = {
-	tag: "SpotifySync",
-	maxRateLimitRetries: Infinity,
-	onRateLimit: () => {
-		rateLimitHits++;
-		sharedPauseUntil = Math.max(sharedPauseUntil, Date.now() + 3000);
-	},
-	beforeFetch: async () => {
-		const delay = sharedPauseUntil - Date.now();
-		if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-	},
-};
-
-function resetAndGetRateLimitHits(): number {
-	const hits = rateLimitHits;
-	rateLimitHits = 0;
-	sharedPauseUntil = 0;
-	return hits;
-}
+const rateLimit = new RateLimitTracker("SpotifySync");
 
 function getUserId(): number | null {
 	const state = redux.store.getState();
@@ -63,7 +43,7 @@ export async function fetchPlaylistTracks(playlistUUID: string, signal?: AbortSi
 	const res = await fetchWithRetry(
 		`https://api.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}&limit=-1`,
 		{ headers, signal },
-		retryOptions,
+		rateLimit.retryOptions,
 	);
 	if (!res.ok) throw new Error(`Failed to fetch playlist items: ${res.status}`);
 	const data = (await res.json()) as { items: { item: TidalTrackInfo | null }[] };
@@ -80,7 +60,7 @@ export async function addTracksToPlaylist(playlistUUID: string, trackIds: number
 	const chunkSize = 20;
 	const total = trackIds.length;
 	let added = 0;
-	rateLimitHits = 0;
+	rateLimit.reset();
 
 	for (let i = 0; i < total; i += chunkSize) {
 		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
@@ -90,7 +70,7 @@ export async function addTracksToPlaylist(playlistUUID: string, trackIds: number
 		const queryArgs = TidalApi.queryArgs();
 
 		// Get ETag
-		const playlistRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers, signal }, retryOptions);
+		const playlistRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers, signal }, rateLimit.retryOptions);
 		if (!playlistRes.ok) throw new Error(`Failed to fetch playlist for ETag: ${playlistRes.status}`);
 
 		const etag = playlistRes.headers.get("etag");
@@ -106,14 +86,14 @@ export async function addTracksToPlaylist(playlistUUID: string, trackIds: number
 			},
 			body: `trackIds=${batch.join(",")}&onDupes=SKIP`,
 			signal,
-		}, retryOptions);
+		}, rateLimit.retryOptions);
 		if (!addRes.ok) throw new Error(`Failed to add tracks to playlist: ${addRes.status}`);
 
 		added += batch.length;
 		onProgress?.(added, total);
 	}
 
-	const hits = resetAndGetRateLimitHits();
+	const hits = rateLimit.resetAndGetHits();
 	if (hits > 0) console.log(`[SpotifySync] Adding to playlist complete. Total 429 rate limit hits: ${hits}`);
 }
 
@@ -157,7 +137,7 @@ export async function fetchFavoriteTracks(onProgress?: (message: string) => void
 		const res = await fetchWithRetry(
 			`https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
 			{ headers, signal },
-			retryOptions,
+			rateLimit.retryOptions,
 		);
 		if (!res.ok) throw new Error(`Failed to fetch favorites: ${res.status}`);
 		const data = (await res.json()) as { totalNumberOfItems?: number; items: { item: TidalTrackInfo | null }[] };
@@ -190,7 +170,7 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 		signal,
 	});
 
-	rateLimitHits = 0;
+	rateLimit.reset();
 
 	if (parallel) {
 		const chunkSize = 20;
@@ -207,7 +187,7 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 			await sem.acquire();
 			try {
 				if (signal?.aborted) return;
-				const res = await fetchWithRetry(url, postInit(`trackId=${batch.join(",")}`), retryOptions);
+				const res = await fetchWithRetry(url, postInit(`trackId=${batch.join(",")}`), rateLimit.retryOptions);
 				if (!res.ok) throw new Error(`Failed to add tracks to favorites: ${res.status}`);
 				added += batch.length;
 				onProgress?.(added, trackIds.length);
@@ -218,13 +198,13 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 	} else {
 		for (let i = 0; i < trackIds.length; i++) {
 			if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
-			const res = await fetchWithRetry(url, postInit(`trackId=${trackIds[i]}`), retryOptions);
+			const res = await fetchWithRetry(url, postInit(`trackId=${trackIds[i]}`), rateLimit.retryOptions);
 			if (!res.ok) throw new Error(`Failed to add track to favorites: ${res.status}`);
 			onProgress?.(i + 1, trackIds.length);
 		}
 	}
 
-	const hits = resetAndGetRateLimitHits();
+	const hits = rateLimit.resetAndGetHits();
 	if (hits > 0) console.log(`[SpotifySync] Adding favorites complete. Total 429 rate limit hits: ${hits}`);
 }
 

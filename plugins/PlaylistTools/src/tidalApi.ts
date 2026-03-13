@@ -1,5 +1,5 @@
 import { redux, TidalApi } from "@luna/lib";
-import { fetchWithRetry } from "../../../lib/retry";
+import { RateLimitTracker, fetchWithRetry } from "../../../lib/retry";
 
 import type { TrackItem } from "./detection";
 
@@ -215,24 +215,7 @@ export async function isrcLookupAll(isrc: string): Promise<TidalSearchResult[]> 
 	return results;
 }
 
-let rateLimitHits = 0;
-let sharedPauseUntil = 0;
-
-export function getRateLimitHits(): number { return rateLimitHits; }
-export function resetRateLimitHits(): void { rateLimitHits = 0; sharedPauseUntil = 0; }
-
-const retryOptions = {
-	tag: "PlaylistTools",
-	maxRateLimitRetries: Infinity,
-	onRateLimit: () => {
-		rateLimitHits++;
-		sharedPauseUntil = Math.max(sharedPauseUntil, Date.now() + 3000);
-	},
-	beforeFetch: async () => {
-		const delay = sharedPauseUntil - Date.now();
-		if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-	},
-};
+export const rateLimit = new RateLimitTracker("PlaylistTools");
 
 export async function searchTracks(query: string, signal?: AbortSignal): Promise<TidalSearchResult[]> {
 	const headers = await TidalApi.getAuthHeaders();
@@ -240,7 +223,7 @@ export async function searchTracks(query: string, signal?: AbortSignal): Promise
 	const res = await fetchWithRetry(
 		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`,
 		{ headers, signal },
-		retryOptions,
+		rateLimit.retryOptions,
 	);
 	if (!res.ok) {
 		console.debug(`[searchTracks] FAILED query="${query}" status=${res.status}`);

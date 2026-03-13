@@ -23,6 +23,52 @@ export interface FetchRetryOptions {
 	beforeFetch?: () => Promise<void>;
 }
 
+/**
+ * Shared rate-limit tracker for coordinating backoff across concurrent requests.
+ * When any request gets 429'd, all concurrent requests pause for the shared duration.
+ */
+export class RateLimitTracker {
+	private _hits = 0;
+	private _sharedPauseUntil = 0;
+	private readonly _pauseDuration: number;
+	readonly tag: string;
+
+	constructor(tag: string, pauseDuration = 3000) {
+		this.tag = tag;
+		this._pauseDuration = pauseDuration;
+	}
+
+	get hits(): number { return this._hits; }
+
+	reset(): void {
+		this._hits = 0;
+		this._sharedPauseUntil = 0;
+	}
+
+	/** Returns the hits count and resets state. */
+	resetAndGetHits(): number {
+		const hits = this._hits;
+		this.reset();
+		return hits;
+	}
+
+	/** FetchRetryOptions with unlimited 429 retries and shared backoff. */
+	get retryOptions(): FetchRetryOptions {
+		return {
+			tag: this.tag,
+			maxRateLimitRetries: Infinity,
+			onRateLimit: () => {
+				this._hits++;
+				this._sharedPauseUntil = Math.max(this._sharedPauseUntil, Date.now() + this._pauseDuration);
+			},
+			beforeFetch: async () => {
+				const delay = this._sharedPauseUntil - Date.now();
+				if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+			},
+		};
+	}
+}
+
 async function backoff(attempt: number, signal: AbortSignal | null | undefined, prefix: string, reason: string, retryAfter?: string | null): Promise<void> {
 	const jitter = Math.random() * 500;
 	const base = retryAfter ? parseInt(retryAfter, 10) * 1000 : 1000 * Math.pow(2, attempt);

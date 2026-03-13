@@ -27,6 +27,48 @@ import { scanForUpgrades } from "./upgrade";
 
 const FAVORITES_UUID = "__favorites__";
 
+function formatEta(seconds: number): string {
+	if (seconds < 60) return `${Math.ceil(seconds)}s`;
+	const m = Math.floor(seconds / 60);
+	const s = Math.ceil(seconds % 60);
+	return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+const ProgressBar = ({ current, total }: { current: number; total: number }) => {
+	const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+	const startRef = useRef<{ time: number; total: number }>({ time: Date.now(), total });
+
+	if (startRef.current.total !== total) {
+		startRef.current = { time: Date.now(), total };
+	}
+
+	let eta = "";
+	if (current > 0 && current < total) {
+		const elapsed = (Date.now() - startRef.current.time) / 1000;
+		const rate = current / elapsed;
+		const remaining = (total - current) / rate;
+		eta = formatEta(remaining);
+	}
+
+	return (
+		<div style={{ marginTop: "8px" }}>
+			<div style={{ height: "4px", borderRadius: "2px", background: "rgba(255,255,255,0.1)", overflow: "hidden" }}>
+				<div style={{
+					height: "100%",
+					borderRadius: "2px",
+					background: "rgba(80,200,120,0.7)",
+					width: `${pct}%`,
+					transition: "width 0.2s ease",
+				}} />
+			</div>
+			<div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "rgba(255,255,255,0.5)", marginTop: "4px" }}>
+				<span>{eta ? `~${eta} remaining` : "\u00A0"}</span>
+				<span>{current}/{total} ({pct}%)</span>
+			</div>
+		</div>
+	);
+};
+
 export const Settings = () => {
 	const [running, setRunning] = useState(false);
 	const [status, setStatus] = useState("");
@@ -363,21 +405,7 @@ export const Settings = () => {
 						)}
 					</div>
 					{running && progress && (
-						<div style={{ marginTop: "8px" }}>
-							<div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "rgba(255,255,255,0.5)", marginBottom: "4px" }}>
-								<span>{progress.current}/{progress.total}</span>
-								<span>{Math.round((progress.current / progress.total) * 100)}%</span>
-							</div>
-							<div style={{ height: "4px", borderRadius: "2px", background: "rgba(255,255,255,0.1)", overflow: "hidden" }}>
-								<div style={{
-									height: "100%",
-									borderRadius: "2px",
-									background: "rgba(80,200,120,0.7)",
-									width: `${(progress.current / progress.total) * 100}%`,
-									transition: "width 0.2s ease",
-								}} />
-							</div>
-						</div>
+						<ProgressBar current={progress.current} total={progress.total} />
 					)}
 					{!running && status && (
 						<div style={{ marginTop: "8px", fontSize: "12px", color: "rgba(255,255,255,0.6)" }}>{status}</div>

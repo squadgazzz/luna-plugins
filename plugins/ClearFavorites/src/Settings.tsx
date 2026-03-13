@@ -1,23 +1,10 @@
 import React, { useRef, useState } from "react";
 import { redux, TidalApi } from "@luna/lib";
-import { Semaphore, fetchWithRetry } from "../../../lib/retry";
+import { Semaphore, RateLimitTracker, fetchWithRetry } from "../../../lib/retry";
 
 const CONFIRM_TEXT = "DELETE ALL";
 
-let rateLimitHits = 0;
-let sharedPauseUntil = 0;
-const retryOptions = {
-	tag: "ClearFavorites",
-	maxRateLimitRetries: Infinity,
-	onRateLimit: () => {
-		rateLimitHits++;
-		sharedPauseUntil = Math.max(sharedPauseUntil, Date.now() + 3000);
-	},
-	beforeFetch: async () => {
-		const delay = sharedPauseUntil - Date.now();
-		if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-	},
-};
+const rateLimit = new RateLimitTracker("ClearFavorites");
 
 function getUserId(): number | null {
 	const state = redux.store.getState();
@@ -40,7 +27,7 @@ async function fetchFavoriteTrackIds(signal: AbortSignal): Promise<number[]> {
 		const res = await fetchWithRetry(
 			`https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
 			{ headers, signal },
-			retryOptions,
+			rateLimit.retryOptions,
 		);
 		if (!res.ok) throw new Error(`Failed to fetch favorites: ${res.status}`);
 		const data = (await res.json()) as { totalNumberOfItems?: number; items: { item: { id: number } }[] };
@@ -67,8 +54,7 @@ async function deleteAllFavorites(onProgress: (done: number, total: number) => v
 	const queryArgs = TidalApi.queryArgs();
 	const sem = new Semaphore(3);
 	let done = 0;
-	rateLimitHits = 0;
-	sharedPauseUntil = 0;
+	rateLimit.reset();
 
 	const deleteOne = async (trackId: number) => {
 		if (signal.aborted) return;
@@ -78,7 +64,7 @@ async function deleteAllFavorites(onProgress: (done: number, total: number) => v
 			const res = await fetchWithRetry(
 				`https://api.tidal.com/v1/users/${userId}/favorites/tracks/${trackId}?${queryArgs}`,
 				{ method: "DELETE", headers, signal },
-				retryOptions,
+				rateLimit.retryOptions,
 			);
 			if (!res.ok) console.warn(`[ClearFavorites] Failed to delete track ${trackId}: ${res.status}`);
 		} finally {
@@ -90,7 +76,7 @@ async function deleteAllFavorites(onProgress: (done: number, total: number) => v
 
 	await Promise.all(trackIds.map((id) => deleteOne(id)));
 
-	if (rateLimitHits > 0) console.log(`[ClearFavorites] Done. Rate limited ${rateLimitHits} time(s).`);
+	if (rateLimit.hits > 0) console.log(`[ClearFavorites] Done. Rate limited ${rateLimit.hits} time(s).`);
 
 	return done;
 }

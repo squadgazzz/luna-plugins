@@ -6,8 +6,7 @@ import {
 	fetchFavoriteTracks,
 	fetchPlaylistItems,
 	fetchStreamInfo,
-	getRateLimitHits,
-	resetRateLimitHits,
+	rateLimit,
 	searchTracks,
 	type TidalSearchResult,
 } from "./tidalApi";
@@ -178,7 +177,7 @@ export async function scanForUpgrades(
 	signal?: AbortSignal,
 ): Promise<PlaylistScanResult[]> {
 	const results: PlaylistScanResult[] = [];
-	resetRateLimitHits();
+	rateLimit.reset();
 
 	for (const target of targets) {
 		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
@@ -233,7 +232,7 @@ export async function scanForUpgrades(
 				sem.release();
 				completed++;
 				if (completed % 10 === 0 || completed === indexed.length) {
-					onStatus(`Scanning "${target.title}": ${completed}/${indexed.length} tracks checked...`, { current: completed, total: indexed.length });
+					onStatus(`Scanning "${target.title}"...`, { current: completed, total: indexed.length });
 				}
 			}
 		};
@@ -265,7 +264,7 @@ export async function scanForUpgrades(
 					infoSem.release();
 					infoDone++;
 					if (infoDone % 20 === 0 || infoDone === allChoices.length) {
-						onStatus(`Fetching stream quality: ${infoDone}/${allChoices.length}...`, { current: infoDone, total: allChoices.length });
+						onStatus(`Fetching stream quality...`, { current: infoDone, total: allChoices.length });
 					}
 				}
 			}));
@@ -300,7 +299,7 @@ export async function scanForUpgrades(
 		}
 	}
 
-	const hits = getRateLimitHits();
+	const hits = rateLimit.hits;
 	if (hits > 0) console.log(`[upgrade] Scan complete. Rate limited ${hits} time(s).`);
 	else console.log(`[upgrade] Scan complete. No rate limiting encountered.`);
 
