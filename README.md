@@ -35,21 +35,24 @@ https://github.com/user-attachments/assets/4a1df562-1d16-42a7-9091-37860a42076d
 
 ### SpotifySync
 
-Sync your Spotify playlists and liked songs to Tidal.
+Sync your Spotify library to Tidal — playlists, liked songs, followed artists, and saved albums.
 
 **The Problem:** If you use both Spotify and Tidal, keeping your libraries in sync means manually searching and adding tracks one by one.
 
 **Features:**
-- **Playlist sync** — select Spotify playlists to sync; creates matching Tidal playlists if they don't exist
+- **Playlist sync** — select Spotify playlists to sync; creates matching Tidal playlists if they don't exist. Supports both owned and followed playlists
 - **Favorites sync** — sync Spotify liked songs to Tidal favorites
-- **Smart matching** — finds Tidal tracks via ISRC lookup, then falls back to search with fuzzy name/artist/duration matching
+- **Artist sync** — sync Spotify followed artists to Tidal, with manual review for ambiguous matches
+- **Album sync** — sync Spotify saved albums to Tidal favorites, matching by album name and artist
+- **Smart matching** — finds Tidal tracks via search with fuzzy name/artist/duration matching and ISRC cross-checking
+- **Album-aware track matching** — prefers tracks from the correct album, falls back to highest quality when no album match is found
 - **Cross-release detection** — recognizes tracks already in your library even when Tidal has different regional releases (e.g. "Хаски" vs "Husky") using ISRC comparison
 - **Similar version handling** — detects when a similar version already exists (e.g. remaster vs original) and lets you choose which to keep
 - **Transliteration support** — handles non-Latin scripts (Cyrillic, CJK, etc.) via Unicode-to-ASCII transliteration
 - **Abbreviation normalization** — matches "Pt. I" to "Part 1", "Ft." to "Feat.", roman to arabic numerals
-- **Sync memory** — remembers matched tracks and similar-version decisions per playlist, skipping re-lookups on subsequent syncs
-- **Manual mode** — review every track before adding, with checkboxes to select/deselect individual tracks
-- **Copy unmatched** — copy the list of tracks that couldn't be found on Tidal to clipboard
+- **Sync memory** — remembers matched tracks, artists, and albums per sync, skipping re-lookups on subsequent syncs
+- **Manual mode** — review every track, artist, and album before adding, with controls to select/deselect individual items or resolve ambiguous matches
+- **Copy unmatched** — copy the list of items that couldn't be found on Tidal to clipboard
 
 https://github.com/user-attachments/assets/c145c9db-d64e-4f1d-95f3-c23728fe9322
 

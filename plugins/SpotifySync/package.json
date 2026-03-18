@@ -1,6 +1,6 @@
 {
 	"name": "@squadgazzz/spotify-sync",
-	"description": "Sync Spotify playlists and favorites to Tidal",
+	"description": "Sync Spotify library to Tidal — playlists, favorites, artists, and albums",
 	"homepage": "https://github.com/squadgazzz/luna-plugins#SpotifySync",
 	"author": {
 		"name": "squadgazzz",
