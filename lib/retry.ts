@@ -52,11 +52,20 @@ export class RateLimitTracker {
 		return hits;
 	}
 
-	/** FetchRetryOptions with unlimited 429 retries and shared backoff. */
+	/** FetchRetryOptions with unlimited 429 retries and shared backoff. Use for cancellable operations. */
 	get retryOptions(): FetchRetryOptions {
+		return this._makeOptions(Infinity);
+	}
+
+	/** FetchRetryOptions with limited 429 retries. Use for non-cancellable operations to avoid infinite loops. */
+	get retryOptionsLimited(): FetchRetryOptions {
+		return this._makeOptions(5);
+	}
+
+	private _makeOptions(maxRateLimitRetries: number): FetchRetryOptions {
 		return {
 			tag: this.tag,
-			maxRateLimitRetries: Infinity,
+			maxRateLimitRetries,
 			onRateLimit: () => {
 				this._hits++;
 				this._sharedPauseUntil = Math.max(this._sharedPauseUntil, Date.now() + this._pauseDuration);
