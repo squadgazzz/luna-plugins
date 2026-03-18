@@ -9,6 +9,11 @@ export interface SpotifyArtist {
 	name: string;
 }
 
+export interface SpotifyFollowedArtist {
+	id: string;
+	name: string;
+}
+
 export interface SpotifyAlbum {
 	name: string;
 	artists: SpotifyArtist[];
@@ -155,4 +160,25 @@ export async function getLikedTracks(onProgress?: (loaded: number, total: number
 		onProgress,
 		signal,
 	);
+}
+
+export async function getFollowedArtists(onProgress?: (loaded: number) => void, signal?: AbortSignal): Promise<SpotifyFollowedArtist[]> {
+	const artists: SpotifyFollowedArtist[] = [];
+	let after: string | null = null;
+
+	for (;;) {
+		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+		const params = new URLSearchParams({ type: "artist", limit: "50" });
+		if (after) params.set("after", after);
+		const response = await spotifyFetch(`${BASE}/me/following?${params}`, signal);
+		const data = await response.json();
+		const page = data.artists;
+		const items = (page.items ?? []) as SpotifyFollowedArtist[];
+		artists.push(...items);
+		onProgress?.(artists.length);
+		after = page.cursors?.after ?? null;
+		if (!after) break;
+	}
+
+	return artists;
 }

@@ -1,11 +1,13 @@
 import anyAscii from "any-ascii";
 import { redux } from "@luna/lib";
 import type { SpotifyPlaylist } from "./spotifyApi";
-import { getPlaylistTracks, getLikedTracks } from "./spotifyApi";
+import { getPlaylistTracks, getLikedTracks, getFollowedArtists } from "./spotifyApi";
 import { matchAllTracks } from "./matching";
-import { fetchUserPlaylists, fetchPlaylistTracks, fetchFavoriteTracks, addTracksToPlaylist, createPlaylist, addToFavorites, removeFromPlaylist, removeFromFavorites } from "./tidalApi";
+import { fetchUserPlaylists, fetchPlaylistTracks, fetchFavoriteTracks, addTracksToPlaylist, createPlaylist, addToFavorites, removeFromPlaylist, removeFromFavorites, fetchFollowedArtists, followArtists } from "./tidalApi";
 import type { TidalPlaylist, TidalTrackInfo } from "./tidalApi";
-import { getMatchCache, saveMatchCache, getSimilarDecisions, preserveFavOrder } from "./state";
+import { getMatchCache, saveMatchCache, getSimilarDecisions, preserveFavOrder, getArtistMatchCache, saveArtistMatchCache, getArtistSkipCache, saveArtistSkipCache } from "./state";
+import { matchAllArtists } from "./artistMatching";
+import type { ArtistToFollow, AmbiguousArtistMatch } from "./artistMatching";
 
 // --- Types ---
 
@@ -62,6 +64,24 @@ export interface ProgressInfo {
 }
 
 export type ProgressCallback = (message: string, progress?: ProgressInfo) => void;
+
+// --- Artist sync types ---
+
+export interface ArtistSyncPrepResult {
+	alreadyFollowed: number;
+	toFollow: ArtistToFollow[];
+	ambiguous: AmbiguousArtistMatch[];
+	unmatched: string[];
+}
+
+export interface ArtistSyncResult {
+	followed: number;
+	alreadyFollowed: number;
+	skipped: number;
+	unmatched: number;
+	followedNames: string[];
+	unmatchedNames: string[];
+}
 
 // --- ISRC helpers ---
 
@@ -517,14 +537,89 @@ async function prepareFavoritesSync(
 	};
 }
 
+async function prepareArtistSync(
+	onProgress: ProgressCallback,
+	signal?: AbortSignal,
+): Promise<ArtistSyncPrepResult> {
+	onProgress("Fetching Spotify followed artists...");
+	const spotifyArtists = await getFollowedArtists((loaded) => {
+		onProgress(`Fetching Spotify artists: ${loaded} loaded...`);
+	}, signal);
+
+	if (spotifyArtists.length === 0) {
+		return { alreadyFollowed: 0, toFollow: [], ambiguous: [], unmatched: [] };
+	}
+
+	onProgress("Fetching Tidal followed artists...");
+	const tidalFollowed = await fetchFollowedArtists(signal);
+	const existingIds = new Set(tidalFollowed.map((a) => a.id));
+
+	const matchCache = getArtistMatchCache();
+	const skipCache = getArtistSkipCache();
+
+	const result = await matchAllArtists(spotifyArtists, existingIds, matchCache, skipCache, (done, total, matched) => {
+		onProgress(`Matching artists: ${matched}/${total} matched`, { current: done, total });
+	}, signal);
+
+	saveArtistMatchCache(matchCache);
+
+	return result;
+}
+
+export async function executeArtistSync(
+	prep: ArtistSyncPrepResult,
+	onProgress: ProgressCallback,
+	signal?: AbortSignal,
+): Promise<ArtistSyncResult> {
+	const artistIds = prep.toFollow.map((a) => a.tidalArtist.id);
+
+	const matchCache = getArtistMatchCache();
+	const skipCache = getArtistSkipCache();
+	for (const amb of prep.ambiguous) {
+		if (amb.selectedTidalId !== null) {
+			artistIds.push(amb.selectedTidalId);
+			matchCache[amb.spotifyArtist.id] = amb.selectedTidalId;
+		} else {
+			skipCache[amb.spotifyArtist.id] = true;
+		}
+	}
+	saveArtistMatchCache(matchCache);
+	saveArtistSkipCache(skipCache);
+
+	const skipped = prep.ambiguous.filter((a) => a.selectedTidalId === null).length;
+
+	if (artistIds.length > 0) {
+		onProgress(`Following ${artistIds.length} artists on Tidal...`);
+		await followArtists(artistIds, (done, total) => {
+			onProgress(`Following artists: ${done}/${total}`, { current: done, total });
+		}, signal);
+		redux.actions["content/LOAD_ALL_FAVORITES"]();
+	}
+
+	const followedNames = [
+		...prep.toFollow.map((a) => a.spotifyArtist.name),
+		...prep.ambiguous.filter((a) => a.selectedTidalId !== null).map((a) => a.spotifyArtist.name),
+	];
+
+	return {
+		followed: artistIds.length,
+		alreadyFollowed: prep.alreadyFollowed,
+		skipped,
+		unmatched: prep.unmatched.length,
+		followedNames,
+		unmatchedNames: prep.unmatched,
+	};
+}
+
 export async function prepareAll(
 	selectedPlaylists: SpotifyPlaylist[],
 	doSyncFavorites: boolean,
+	doSyncArtists: boolean,
 	onProgress: ProgressCallback,
 	onPrepared: (result: SyncPrepResult) => void,
 	signal?: AbortSignal,
-): Promise<SyncPrepResult[]> {
-	const results: SyncPrepResult[] = [];
+): Promise<{ playlists: SyncPrepResult[]; artists?: ArtistSyncPrepResult }> {
+	const playlists: SyncPrepResult[] = [];
 
 	onProgress("Fetching Tidal playlists...");
 	const tidalPlaylists = await fetchUserPlaylists(signal);
@@ -533,11 +628,11 @@ export async function prepareAll(
 		if (signal?.aborted) break;
 		try {
 			const result = await preparePlaylistSync(playlist, tidalPlaylists, onProgress, signal);
-			results.push(result);
+			playlists.push(result);
 			onPrepared(result);
 		} catch (error) {
 			if (error instanceof DOMException && error.name === "AbortError") break;
-			results.push({
+			playlists.push({
 				playlistName: playlist.name,
 				spotifyPlaylistId: playlist.id,
 				playlistDescription: "",
@@ -556,11 +651,11 @@ export async function prepareAll(
 	if (doSyncFavorites && !signal?.aborted) {
 		try {
 			const result = await prepareFavoritesSync(onProgress, signal);
-			results.push(result);
+			playlists.push(result);
 			onPrepared(result);
 		} catch (error) {
 			if (!(error instanceof DOMException && error.name === "AbortError")) {
-				results.push({
+				playlists.push({
 					playlistName: "Favorites",
 					spotifyPlaylistId: "favorites",
 					playlistDescription: "",
@@ -577,7 +672,18 @@ export async function prepareAll(
 		}
 	}
 
-	return results;
+	let artists: ArtistSyncPrepResult | undefined;
+	if (doSyncArtists && !signal?.aborted) {
+		try {
+			artists = await prepareArtistSync(onProgress, signal);
+		} catch (error) {
+			if (!(error instanceof DOMException && error.name === "AbortError")) {
+				onProgress(`Error preparing artist sync: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+	}
+
+	return { playlists, artists };
 }
 
 // --- Execute functions ---

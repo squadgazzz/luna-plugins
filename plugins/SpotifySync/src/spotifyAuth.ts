@@ -15,7 +15,7 @@ import type { LunaUnloads } from "@luna/core";
 const SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
 const REDIRECT_URI = "tidaLuna://spotify-callback";
-const SCOPES = "playlist-read-private user-library-read";
+const SCOPES = "playlist-read-private user-library-read user-follow-read";
 
 const VERIFIER_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
 

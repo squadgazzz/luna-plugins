@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 
-import type { SyncPrepResult, SyncPlaylistResult, SimilarVersion, TrackToRemove, ProgressInfo } from "./sync";
+import type { SyncPrepResult, SyncPlaylistResult, SimilarVersion, TrackToRemove, ArtistSyncPrepResult, ArtistSyncResult, ProgressInfo } from "./sync";
 
 function formatDuration(seconds: number): string {
 	const m = Math.floor(seconds / 60);
@@ -141,15 +141,29 @@ interface Props {
 	progressMessage: string;
 	progressInfo?: ProgressInfo;
 	prepResults: SyncPrepResult[];
+	artistPrep?: ArtistSyncPrepResult;
 	results: SyncPlaylistResult[];
-	onConfirm: (filteredPreps: SyncPrepResult[]) => void;
+	artistResult?: ArtistSyncResult;
+	onConfirm: (filteredPreps: SyncPrepResult[], artistPrep?: ArtistSyncPrepResult) => void;
 	onClose: () => void;
 	onCancel: () => void;
 }
 
-export const SyncModal = ({ phase, progressMessage, progressInfo, prepResults, results, onConfirm, onClose, onCancel }: Props) => {
+export const SyncModal = ({ phase, progressMessage, progressInfo, prepResults, artistPrep, results, artistResult, onConfirm, onClose, onCancel }: Props) => {
 	// Checkbox state: key = `${playlistName}:new:${tidalId}` or `${playlistName}:existing:${playlistIndex}` → boolean
 	const [checked, setChecked] = useState<Map<string, boolean>>(new Map());
+	// Artist ambiguous decisions: spotifyArtistId → tidalId or null (skip)
+	const [artistDecisions, setArtistDecisions] = useState<Record<string, number | null>>({});
+
+	useEffect(() => {
+		if (phase === "confirm" && artistPrep) {
+			const initial: Record<string, number | null> = {};
+			for (const amb of artistPrep.ambiguous) {
+				initial[amb.spotifyArtist.id] = null; // default: skip
+			}
+			setArtistDecisions(initial);
+		}
+	}, [phase, artistPrep]);
 
 	useEffect(() => {
 		if (phase === "confirm") {
@@ -210,7 +224,15 @@ export const SyncModal = ({ phase, progressMessage, progressInfo, prepResults, r
 			}
 			return { ...prep, tracksToAdd, tracksToRemove };
 		});
-		onConfirm(filtered);
+
+		// Apply artist decisions
+		if (artistPrep) {
+			for (const amb of artistPrep.ambiguous) {
+				amb.selectedTidalId = artistDecisions[amb.spotifyArtist.id] ?? null;
+			}
+		}
+
+		onConfirm(filtered, artistPrep);
 	};
 
 	const totalNewChecked = prepResults.reduce((sum, prep) => {
@@ -226,7 +248,8 @@ export const SyncModal = ({ phase, progressMessage, progressInfo, prepResults, r
 		}
 		return sum + count;
 	}, 0);
-	const hasChanges = totalNewChecked > 0 || totalExistingUnchecked > 0;
+	const hasArtistChanges = (artistPrep?.toFollow.length ?? 0) > 0 || Object.values(artistDecisions).some((v) => v !== null);
+	const hasChanges = totalNewChecked > 0 || totalExistingUnchecked > 0 || hasArtistChanges;
 
 	// Complete phase totals
 	const totalMatched = results.reduce((sum, r) => sum + r.matched, 0);
@@ -455,6 +478,69 @@ export const SyncModal = ({ phase, progressMessage, progressInfo, prepResults, r
 							);
 						})}
 
+					{/* Artist confirmation (confirm phase) */}
+					{phase === "confirm" && artistPrep && (artistPrep.toFollow.length > 0 || artistPrep.ambiguous.length > 0 || artistPrep.unmatched.length > 0 || artistPrep.alreadyFollowed > 0) && (
+						<div style={{ marginBottom: "16px" }}>
+							<h3 style={{ fontSize: "15px", color: "#fff", margin: "0 0 4px 0" }}>Artists</h3>
+
+							{artistPrep.toFollow.length > 0 && (
+								<div style={{ color: "rgba(255,255,255,0.5)", fontSize: "12px", marginBottom: "6px" }}>
+									{artistPrep.toFollow.length} artist(s) matched automatically
+								</div>
+							)}
+
+							{artistPrep.alreadyFollowed > 0 && (
+								<div style={{ color: "rgba(255,255,255,0.5)", fontSize: "12px", marginBottom: "6px" }}>
+									{artistPrep.alreadyFollowed} artist(s) already followed
+								</div>
+							)}
+
+							{artistPrep.ambiguous.length > 0 && (
+								<div style={{ marginBottom: "8px" }}>
+									<div style={{ color: "rgba(255,200,100,0.8)", fontSize: "13px", marginBottom: "4px" }}>
+										{artistPrep.ambiguous.length} artist(s) need manual selection:
+									</div>
+									{artistPrep.ambiguous.map((amb) => (
+										<div key={amb.spotifyArtist.id} style={{ marginBottom: "8px", padding: "8px 12px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "6px" }}>
+											<div style={{ fontSize: "13px", color: "#fff", marginBottom: "6px", fontWeight: 500 }}>
+												{amb.spotifyArtist.name}
+											</div>
+											{amb.candidates.map((c) => (
+												<label key={c.id} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "rgba(255,255,255,0.7)", padding: "3px 0", cursor: "pointer" }}>
+													<input
+														type="radio"
+														name={`artist-${amb.spotifyArtist.id}`}
+														checked={artistDecisions[amb.spotifyArtist.id] === c.id}
+														onChange={() => setArtistDecisions((d) => ({ ...d, [amb.spotifyArtist.id]: c.id }))}
+													/>
+													{c.name}{c.popularity != null ? ` (popularity: ${c.popularity})` : ""}
+												</label>
+											))}
+											<label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "rgba(255,255,255,0.4)", padding: "3px 0", cursor: "pointer" }}>
+												<input
+													type="radio"
+													name={`artist-${amb.spotifyArtist.id}`}
+													checked={artistDecisions[amb.spotifyArtist.id] === null}
+													onChange={() => setArtistDecisions((d) => ({ ...d, [amb.spotifyArtist.id]: null }))}
+												/>
+												Skip
+											</label>
+										</div>
+									))}
+								</div>
+							)}
+
+							{artistPrep.unmatched.length > 0 && (
+								<TrackList
+									label={`unmatched artist${artistPrep.unmatched.length !== 1 ? "s" : ""}`}
+									tracks={artistPrep.unmatched}
+									color="rgba(255,200,100,0.8)"
+									copyable
+								/>
+							)}
+						</div>
+					)}
+
 					{/* Complete phase */}
 					{phase === "complete" &&
 						results.map((result, i) => (
@@ -484,6 +570,34 @@ export const SyncModal = ({ phase, progressMessage, progressInfo, prepResults, r
 								/>
 							</div>
 						))}
+
+					{/* Artist results */}
+					{phase === "complete" && artistResult && (
+						<div style={{ marginBottom: "16px" }}>
+							<h3 style={{ fontSize: "15px", color: "#fff", margin: "0 0 4px 0" }}>Artists</h3>
+							<div style={{ color: "rgba(255,255,255,0.6)", fontSize: "13px", marginBottom: "6px" }}>
+								{artistResult.followed > 0 ? `Followed: ${artistResult.followed}` : ""}
+								{artistResult.followed > 0 && artistResult.alreadyFollowed > 0 ? " | " : ""}
+								{artistResult.alreadyFollowed > 0 ? `Already following: ${artistResult.alreadyFollowed}` : ""}
+								{(artistResult.followed > 0 || artistResult.alreadyFollowed > 0) && artistResult.skipped > 0 ? " | " : ""}
+								{artistResult.skipped > 0 ? `Skipped: ${artistResult.skipped}` : ""}
+								{(artistResult.followed > 0 || artistResult.alreadyFollowed > 0 || artistResult.skipped > 0) && artistResult.unmatched > 0 ? " | " : ""}
+								{artistResult.unmatched > 0 ? `Not found: ${artistResult.unmatched}` : ""}
+							</div>
+							<TrackList
+								label={`followed artist${artistResult.followedNames.length !== 1 ? "s" : ""}`}
+								tracks={artistResult.followedNames}
+								color="rgba(29,185,84,0.8)"
+								copyable
+							/>
+							<TrackList
+								label={`unmatched artist${artistResult.unmatchedNames.length !== 1 ? "s" : ""}`}
+								tracks={artistResult.unmatchedNames}
+								color="rgba(255,200,100,0.8)"
+								copyable
+							/>
+						</div>
+					)}
 				</div>
 
 				{/* Footer */}

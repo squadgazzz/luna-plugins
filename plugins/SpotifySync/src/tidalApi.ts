@@ -17,6 +17,13 @@ export interface TidalTrackInfo {
 	artists: { name: string }[];
 }
 
+export interface TidalArtist {
+	id: number;
+	name: string;
+	popularity?: number;
+	picture?: string;
+}
+
 const rateLimit = new RateLimitTracker("SpotifySync");
 
 function getUserId(): number | null {
@@ -262,4 +269,90 @@ export async function removeFromFavorites(trackIds: number[], signal?: AbortSign
 	await Promise.all(trackIds.map((id) => deleteOne(id)));
 
 	return !failed;
+}
+
+// --- Artist API ---
+
+export async function searchArtist(query: string, signal?: AbortSignal): Promise<TidalArtist[]> {
+	const headers = await TidalApi.getAuthHeaders();
+	const queryArgs = TidalApi.queryArgs();
+	const res = await fetchWithRetry(
+		`https://api.tidal.com/v1/search/artists?${queryArgs}&query=${encodeURIComponent(query)}&limit=10`,
+		{ headers, signal },
+		rateLimit.retryOptions,
+	);
+	if (!res.ok) return [];
+	const data = await res.json();
+	return (data.items ?? []) as TidalArtist[];
+}
+
+export async function fetchFollowedArtists(signal?: AbortSignal): Promise<TidalArtist[]> {
+	const userId = getUserId();
+	if (userId === null) throw new Error("Not logged in");
+
+	const headers = await TidalApi.getAuthHeaders();
+	const queryArgs = TidalApi.queryArgs();
+	const artists: TidalArtist[] = [];
+	let offset = 0;
+	const limit = 9999;
+	let total = Infinity;
+
+	while (offset < total) {
+		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+		const res = await fetchWithRetry(
+			`https://api.tidal.com/v1/users/${userId}/favorites/artists?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
+			{ headers, signal },
+			rateLimit.retryOptions,
+		);
+		if (!res.ok) throw new Error(`Failed to fetch followed artists: ${res.status}`);
+		const data = (await res.json()) as { totalNumberOfItems?: number; items: { item: TidalArtist | null }[] };
+		if (data.totalNumberOfItems !== undefined) total = data.totalNumberOfItems;
+		const items = data.items ?? [];
+		if (items.length === 0) break;
+		for (const entry of items) {
+			if (entry.item) artists.push(entry.item);
+		}
+		offset += items.length;
+	}
+
+	return artists;
+}
+
+export async function followArtists(artistIds: number[], onProgress?: (done: number, total: number) => void, signal?: AbortSignal): Promise<void> {
+	const userId = getUserId();
+	if (userId === null) throw new Error("Not logged in");
+
+	const headers = await TidalApi.getAuthHeaders();
+	const queryArgs = TidalApi.queryArgs();
+	const sem = new Semaphore(5);
+	let done = 0;
+	rateLimit.reset();
+
+	const followOne = async (artistId: number) => {
+		if (signal?.aborted) return;
+		await sem.acquire();
+		try {
+			if (signal?.aborted) return;
+			const res = await fetchWithRetry(
+				`https://api.tidal.com/v1/users/${userId}/favorites/artists?${queryArgs}`,
+				{
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+					body: `artistId=${artistId}`,
+					signal,
+				},
+				rateLimit.retryOptions,
+			);
+			if (!res.ok) console.warn(`[SpotifySync] Failed to follow artist ${artistId}: ${res.status}`);
+		} finally {
+			sem.release();
+			done++;
+			onProgress?.(done, artistIds.length);
+		}
+	};
+
+	await Promise.all(artistIds.map((id) => followOne(id)));
+
+	const hits = rateLimit.resetAndGetHits();
+	if (hits > 0) console.log(`[SpotifySync] Following artists complete. Total 429 rate limit hits: ${hits}`);
 }

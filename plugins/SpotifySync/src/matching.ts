@@ -17,7 +17,7 @@ interface TidalTrackResult {
 
 // --- String helpers (ported from sync.py) ---
 
-function normalize(s: string): string {
+export function normalize(s: string): string {
 	// NFD normalize, strip combining marks (accents), lowercase, trim
 	return s
 		.normalize("NFD")
