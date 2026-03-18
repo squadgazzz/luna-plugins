@@ -126,14 +126,12 @@ export async function getMe(signal?: AbortSignal): Promise<{ id: string; display
 }
 
 export async function getPlaylists(signal?: AbortSignal): Promise<SpotifyPlaylist[]> {
-	const me = await getMe(signal);
-	const playlists = await fetchAllPages<SpotifyPlaylist>(
+	return fetchAllPages<SpotifyPlaylist>(
 		`${BASE}/me/playlists?limit=50`,
 		(data) => data.items as SpotifyPlaylist[],
 		undefined,
 		signal,
 	);
-	return playlists.filter((p) => p.owner.id === me.id);
 }
 
 export async function getPlaylistTracks(

@@ -38,6 +38,7 @@ import { SyncModal, type ModalPhase } from "./SyncModal";
 export const Settings = () => {
 	const [loggedIn, setLoggedIn] = useState(isLoggedIn());
 	const [userName, setUserName] = useState("");
+	const [userId, setUserId] = useState("");
 	const [clientIdInput, setClientIdInput] = useState(initClientId);
 	const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([]);
 	const [tidalPlaylists, setTidalPlaylists] = useState<TidalPlaylist[]>([]);
@@ -77,6 +78,7 @@ export const Settings = () => {
 		Promise.all([getMe(), getPlaylists(), fetchUserPlaylists()])
 			.then(([me, spotifyPl, tidalPl]) => {
 				setUserName(me.display_name);
+				setUserId(me.id);
 				setPlaylists(spotifyPl);
 				setTidalPlaylists(tidalPl);
 				setLoading(false);
@@ -588,64 +590,90 @@ export const Settings = () => {
 									{selected.size === playlists.length ? "Deselect all" : "Select all"}
 								</button>
 							</div>
-							<div style={{ maxHeight: "300px", overflowY: "auto", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.1)" }}>
-								{playlists.map((p) => (
-									<label
-										key={p.id}
-										style={{
-											display: "flex",
-											alignItems: "center",
-											padding: "8px 12px",
-											cursor: "pointer",
-											borderBottom: "1px solid rgba(255,255,255,0.05)",
-											background: selected.has(p.id) ? "rgba(29,185,84,0.1)" : "transparent",
-										}}
-									>
-										<input
-											type="checkbox"
-											checked={selected.has(p.id)}
-											onChange={() => togglePlaylist(p.id)}
-											style={{ marginRight: "10px" }}
-										/>
-										<span style={{ flex: 1, color: "rgba(255,255,255,0.85)", fontSize: "13px" }}>{p.name}</span>
-										<span style={{ color: "rgba(255,255,255,0.4)", fontSize: "12px", marginRight: "8px" }}>
-											{p.tracks.total} tracks
-										</span>
-										<span
+							<div style={{ maxHeight: "400px", overflowY: "auto", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.1)" }}>
+								{(() => {
+									const ownedPlaylists = playlists.filter((p) => p.owner.id === userId);
+									const followedPlaylists = playlists.filter((p) => p.owner.id !== userId);
+									const renderPlaylist = (p: SpotifyPlaylist) => (
+										<label
+											key={p.id}
 											style={{
-												padding: "1px 6px",
-												borderRadius: "3px",
-												fontSize: "11px",
-												background: tidalNames.has(p.name) ? "rgba(100,200,255,0.15)" : "rgba(29,185,84,0.15)",
-												color: tidalNames.has(p.name) ? "rgba(100,200,255,0.8)" : "rgba(29,185,84,0.8)",
+												display: "flex",
+												alignItems: "center",
+												padding: "8px 12px",
+												cursor: "pointer",
+												borderBottom: "1px solid rgba(255,255,255,0.05)",
+												background: selected.has(p.id) ? "rgba(29,185,84,0.1)" : "transparent",
 											}}
 										>
-											{tidalNames.has(p.name) ? "Update" : "New"}
-										</span>
-										{hasSyncMemory(p.id) && (
-											<button
-												onClick={(e) => {
-													e.preventDefault();
-													e.stopPropagation();
-													clearSyncMemoryFor(p.id);
-													bumpMemory();
-												}}
+											<input
+												type="checkbox"
+												checked={selected.has(p.id)}
+												onChange={() => togglePlaylist(p.id)}
+												style={{ marginRight: "10px" }}
+											/>
+											<span style={{ flex: 1, color: "rgba(255,255,255,0.85)", fontSize: "13px" }}>{p.name}</span>
+											<span style={{ color: "rgba(255,255,255,0.4)", fontSize: "12px", marginRight: "8px" }}>
+												{p.tracks.total} tracks
+											</span>
+											<span
 												style={{
 													padding: "1px 6px",
 													borderRadius: "3px",
-													border: "1px solid rgba(255,255,255,0.15)",
-													background: "transparent",
-													color: "rgba(255,255,255,0.45)",
-													cursor: "pointer",
 													fontSize: "11px",
-													marginLeft: "4px",
+													background: tidalNames.has(p.name) ? "rgba(100,200,255,0.15)" : "rgba(29,185,84,0.15)",
+													color: tidalNames.has(p.name) ? "rgba(100,200,255,0.8)" : "rgba(29,185,84,0.8)",
 												}}
 											>
-												Clear memory
-											</button>
-										)}
-									</label>
-								))}
+												{tidalNames.has(p.name) ? "Update" : "New"}
+											</span>
+											{hasSyncMemory(p.id) && (
+												<button
+													onClick={(e) => {
+														e.preventDefault();
+														e.stopPropagation();
+														clearSyncMemoryFor(p.id);
+														bumpMemory();
+													}}
+													style={{
+														padding: "1px 6px",
+														borderRadius: "3px",
+														border: "1px solid rgba(255,255,255,0.15)",
+														background: "transparent",
+														color: "rgba(255,255,255,0.45)",
+														cursor: "pointer",
+														fontSize: "11px",
+														marginLeft: "4px",
+													}}
+												>
+													Clear memory
+												</button>
+											)}
+										</label>
+									);
+									return (
+										<>
+											{ownedPlaylists.map(renderPlaylist)}
+											{followedPlaylists.length > 0 && (
+												<>
+													<div style={{
+														padding: "6px 12px",
+														fontSize: "11px",
+														color: "rgba(255,255,255,0.4)",
+														background: "rgba(255,255,255,0.03)",
+														borderBottom: "1px solid rgba(255,255,255,0.08)",
+														fontWeight: 500,
+														letterSpacing: "0.5px",
+														textTransform: "uppercase",
+													}}>
+														Followed playlists
+													</div>
+													{followedPlaylists.map(renderPlaylist)}
+												</>
+											)}
+										</>
+									);
+								})()}
 							</div>
 						</div>
 
