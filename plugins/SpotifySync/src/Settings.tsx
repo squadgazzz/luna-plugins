@@ -8,6 +8,8 @@ import {
 	setSyncFavorites,
 	syncArtists as initSyncArtists,
 	setSyncArtists,
+	syncAlbums as initSyncAlbums,
+	setSyncAlbums,
 	syncMode as initSyncMode,
 	setSyncMode,
 	skipSimilar as initSkipSimilar,
@@ -20,6 +22,8 @@ import {
 	clearSyncMemoryFor,
 	hasArtistCache,
 	clearArtistCache,
+	hasAlbumCache,
+	clearAlbumCache,
 	saveSimilarDecisions,
 	getSimilarDecisions,
 } from "./state";
@@ -28,7 +32,7 @@ import { startAuthFlow } from "./spotifyAuth";
 import { unloads as pluginUnloads } from "./state";
 import { getPlaylists, getMe, type SpotifyPlaylist } from "./spotifyApi";
 import { fetchUserPlaylists, type TidalPlaylist } from "./tidalApi";
-import { prepareAll, executeAll, executeArtistSync, type SyncPrepResult, type SyncPlaylistResult, type ArtistSyncPrepResult, type ArtistSyncResult, type ProgressInfo } from "./sync";
+import { prepareAll, executeAll, executeArtistSync, executeAlbumSync, type SyncPrepResult, type SyncPlaylistResult, type ArtistSyncPrepResult, type ArtistSyncResult, type AlbumSyncPrepResult, type AlbumSyncResult, type ProgressInfo } from "./sync";
 import { SyncModal, type ModalPhase } from "./SyncModal";
 
 export const Settings = () => {
@@ -42,6 +46,7 @@ export const Settings = () => {
 	const [error, setError] = useState("");
 	const [doSyncFavorites, setDoSyncFavorites] = useState(initSyncFavorites);
 	const [doSyncArtists, setDoSyncArtists] = useState(initSyncArtists);
+	const [doSyncAlbums, setDoSyncAlbums] = useState(initSyncAlbums);
 	const [mode, setMode] = useState<"auto" | "manual">(initSyncMode);
 	const [doSkipSimilar, setDoSkipSimilar] = useState(initSkipSimilar);
 	const [memoryVersion, setMemoryVersion] = useState(0);
@@ -59,8 +64,10 @@ export const Settings = () => {
 	const [progressInfo, setProgressInfo] = useState<ProgressInfo | undefined>(undefined);
 	const [prepResults, setPrepResults] = useState<SyncPrepResult[]>([]);
 	const [artistPrep, setArtistPrep] = useState<ArtistSyncPrepResult | undefined>(undefined);
+	const [albumPrep, setAlbumPrep] = useState<AlbumSyncPrepResult | undefined>(undefined);
 	const [results, setResults] = useState<SyncPlaylistResult[]>([]);
 	const [artistResult, setArtistResult] = useState<ArtistSyncResult | undefined>(undefined);
+	const [albumResult, setAlbumResult] = useState<AlbumSyncResult | undefined>(undefined);
 	const [uriCopied, setUriCopied] = useState(false);
 	const abortRef = useRef<AbortController | null>(null);
 
@@ -148,21 +155,25 @@ export const Settings = () => {
 		setProgressInfo(undefined);
 		setPrepResults([]);
 		setArtistPrep(undefined);
+		setAlbumPrep(undefined);
 		setResults([]);
 		setArtistResult(undefined);
+		setAlbumResult(undefined);
 
 		try {
-			// Phase 1: Prepare (match all tracks + artists)
+			// Phase 1: Prepare (match all tracks + artists + albums)
 			const allPrep = await prepareAll(
 				selectedPlaylists,
 				doSyncFavorites,
 				doSyncArtists,
+				doSyncAlbums,
 				updateProgress,
 				() => {},
 				abort.signal,
 			);
 			setPrepResults(allPrep.playlists);
 			setArtistPrep(allPrep.artists);
+			setAlbumPrep(allPrep.albums);
 
 			if (abort.signal.aborted) return;
 
@@ -195,6 +206,12 @@ export const Settings = () => {
 				setArtistResult(artResult);
 			}
 
+			// Execute album sync (auto mode adds all exact matches)
+			if (allPrep.albums) {
+				const albResult = await executeAlbumSync(allPrep.albums, updateProgress, abort.signal);
+				setAlbumResult(albResult);
+			}
+
 			setModalPhase("complete");
 		} catch (err) {
 			if (!(err instanceof DOMException && err.name === "AbortError")) {
@@ -206,7 +223,7 @@ export const Settings = () => {
 		}
 	};
 
-	const handleConfirm = async (filteredPreps: SyncPrepResult[], confirmedArtistPrep?: ArtistSyncPrepResult) => {
+	const handleConfirm = async (filteredPreps: SyncPrepResult[], confirmedArtistPrep?: ArtistSyncPrepResult, confirmedAlbumPrep?: AlbumSyncPrepResult) => {
 		const abort = new AbortController();
 		abortRef.current = abort;
 		setSyncing(true);
@@ -214,6 +231,7 @@ export const Settings = () => {
 		updateProgress("Adding tracks...");
 		setResults([]);
 		setArtistResult(undefined);
+		setAlbumResult(undefined);
 
 		try {
 			await executeAll(
@@ -227,6 +245,11 @@ export const Settings = () => {
 			if (confirmedArtistPrep) {
 				const artResult = await executeArtistSync(confirmedArtistPrep, updateProgress, abort.signal);
 				setArtistResult(artResult);
+			}
+
+			if (confirmedAlbumPrep) {
+				const albResult = await executeAlbumSync(confirmedAlbumPrep, updateProgress, abort.signal);
+				setAlbumResult(albResult);
 			}
 
 			setModalPhase("complete");
@@ -486,6 +509,37 @@ export const Settings = () => {
 						)}
 
 						<LunaSwitchSetting
+							title="Sync albums"
+							desc="Sync Spotify saved albums to Tidal favorites"
+							defaultChecked={initSyncAlbums}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+								setSyncAlbums(e.target.checked);
+								setDoSyncAlbums(e.target.checked);
+							}}
+						/>
+						{doSyncAlbums && hasAlbumCache() && (
+							<div style={{ padding: "0 0 4px 0" }}>
+								<button
+									onClick={() => {
+										clearAlbumCache();
+										bumpMemory();
+									}}
+									style={{
+										padding: "2px 8px",
+										borderRadius: "3px",
+										border: "1px solid rgba(255,255,255,0.15)",
+										background: "transparent",
+										color: "rgba(255,255,255,0.5)",
+										cursor: "pointer",
+										fontSize: "11px",
+									}}
+								>
+									Clear album cache
+								</button>
+							</div>
+						)}
+
+						<LunaSwitchSetting
 							title="Manual mode"
 							desc="Review and confirm tracks before adding"
 							defaultChecked={initSyncMode === "manual"}
@@ -599,15 +653,15 @@ export const Settings = () => {
 						<div style={{ padding: "12px 0" }}>
 							<button
 								onClick={handleSync}
-								disabled={syncing || (selected.size === 0 && !doSyncFavorites && !doSyncArtists)}
+								disabled={syncing || (selected.size === 0 && !doSyncFavorites && !doSyncArtists && !doSyncAlbums)}
 								style={{
 									width: "100%",
 									padding: "10px",
 									borderRadius: "4px",
 									border: "none",
-									background: syncing || (selected.size === 0 && !doSyncFavorites && !doSyncArtists) ? "rgba(255,255,255,0.1)" : "#1db954",
+									background: syncing || (selected.size === 0 && !doSyncFavorites && !doSyncArtists && !doSyncAlbums) ? "rgba(255,255,255,0.1)" : "#1db954",
 									color: "#fff",
-									cursor: syncing || (selected.size === 0 && !doSyncFavorites && !doSyncArtists) ? "not-allowed" : "pointer",
+									cursor: syncing || (selected.size === 0 && !doSyncFavorites && !doSyncArtists && !doSyncAlbums) ? "not-allowed" : "pointer",
 									fontSize: "14px",
 									fontWeight: "bold",
 								}}
@@ -619,6 +673,7 @@ export const Settings = () => {
 										if (selected.size > 0) parts.push(`${selected.size} playlist(s)`);
 										if (doSyncFavorites) parts.push("favorites");
 										if (doSyncArtists) parts.push("artists");
+										if (doSyncAlbums) parts.push("albums");
 										return parts.length > 0 ? `Sync ${parts.join(" + ")}` : "Sync";
 									})()}
 							</button>
@@ -638,8 +693,10 @@ export const Settings = () => {
 					progressInfo={progressInfo}
 					prepResults={prepResults}
 					artistPrep={artistPrep}
+					albumPrep={albumPrep}
 					results={results}
 					artistResult={artistResult}
+					albumResult={albumResult}
 					onConfirm={handleConfirm}
 					onClose={() => setShowModal(false)}
 					onCancel={handleCancel}

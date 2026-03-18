@@ -24,6 +24,14 @@ export interface TidalArtist {
 	picture?: string;
 }
 
+export interface TidalAlbum {
+	id: number;
+	title: string;
+	artists: { name: string }[];
+	numberOfTracks?: number;
+	releaseDate?: string;
+}
+
 const rateLimit = new RateLimitTracker("SpotifySync");
 
 function getUserId(): number | null {
@@ -355,4 +363,90 @@ export async function followArtists(artistIds: number[], onProgress?: (done: num
 
 	const hits = rateLimit.resetAndGetHits();
 	if (hits > 0) console.log(`[SpotifySync] Following artists complete. Total 429 rate limit hits: ${hits}`);
+}
+
+// --- Album API ---
+
+export async function searchAlbum(query: string, signal?: AbortSignal): Promise<TidalAlbum[]> {
+	const headers = await TidalApi.getAuthHeaders();
+	const queryArgs = TidalApi.queryArgs();
+	const res = await fetchWithRetry(
+		`https://api.tidal.com/v1/search/albums?${queryArgs}&query=${encodeURIComponent(query)}&limit=10`,
+		{ headers, signal },
+		rateLimit.retryOptions,
+	);
+	if (!res.ok) return [];
+	const data = await res.json();
+	return (data.items ?? []) as TidalAlbum[];
+}
+
+export async function fetchFavoriteAlbums(signal?: AbortSignal): Promise<TidalAlbum[]> {
+	const userId = getUserId();
+	if (userId === null) throw new Error("Not logged in");
+
+	const headers = await TidalApi.getAuthHeaders();
+	const queryArgs = TidalApi.queryArgs();
+	const albums: TidalAlbum[] = [];
+	let offset = 0;
+	const limit = 9999;
+	let total = Infinity;
+
+	while (offset < total) {
+		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+		const res = await fetchWithRetry(
+			`https://api.tidal.com/v1/users/${userId}/favorites/albums?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
+			{ headers, signal },
+			rateLimit.retryOptions,
+		);
+		if (!res.ok) throw new Error(`Failed to fetch favorite albums: ${res.status}`);
+		const data = (await res.json()) as { totalNumberOfItems?: number; items: { item: TidalAlbum | null }[] };
+		if (data.totalNumberOfItems !== undefined) total = data.totalNumberOfItems;
+		const items = data.items ?? [];
+		if (items.length === 0) break;
+		for (const entry of items) {
+			if (entry.item) albums.push(entry.item);
+		}
+		offset += items.length;
+	}
+
+	return albums;
+}
+
+export async function favoriteAlbums(albumIds: number[], onProgress?: (done: number, total: number) => void, signal?: AbortSignal): Promise<void> {
+	const userId = getUserId();
+	if (userId === null) throw new Error("Not logged in");
+
+	const headers = await TidalApi.getAuthHeaders();
+	const queryArgs = TidalApi.queryArgs();
+	const sem = new Semaphore(5);
+	let done = 0;
+	rateLimit.reset();
+
+	const addOne = async (albumId: number) => {
+		if (signal?.aborted) return;
+		await sem.acquire();
+		try {
+			if (signal?.aborted) return;
+			const res = await fetchWithRetry(
+				`https://api.tidal.com/v1/users/${userId}/favorites/albums?${queryArgs}`,
+				{
+					method: "POST",
+					headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+					body: `albumId=${albumId}`,
+					signal,
+				},
+				rateLimit.retryOptions,
+			);
+			if (!res.ok) console.warn(`[SpotifySync] Failed to favorite album ${albumId}: ${res.status}`);
+		} finally {
+			sem.release();
+			done++;
+			onProgress?.(done, albumIds.length);
+		}
+	};
+
+	await Promise.all(albumIds.map((id) => addOne(id)));
+
+	const hits = rateLimit.resetAndGetHits();
+	if (hits > 0) console.log(`[SpotifySync] Favoriting albums complete. Total 429 rate limit hits: ${hits}`);
 }

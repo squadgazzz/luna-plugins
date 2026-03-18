@@ -14,6 +14,7 @@ export let syncMode: "auto" | "manual" = (localStorage.getItem(`${STORAGE_PREFIX
 export let skipSimilar = localStorage.getItem(`${STORAGE_PREFIX}skipSimilar`) !== "false";
 export let preserveFavOrder = localStorage.getItem(`${STORAGE_PREFIX}preserveFavOrder`) !== "false";
 export let syncArtists = localStorage.getItem(`${STORAGE_PREFIX}syncArtists`) === "true";
+export let syncAlbums = localStorage.getItem(`${STORAGE_PREFIX}syncAlbums`) === "true";
 
 export function setClientId(id: string): void {
 	clientId = id;
@@ -63,6 +64,11 @@ export function setSyncMode(mode: "auto" | "manual"): void {
 export function setSyncArtists(enabled: boolean): void {
 	syncArtists = enabled;
 	localStorage.setItem(`${STORAGE_PREFIX}syncArtists`, String(enabled));
+}
+
+export function setSyncAlbums(enabled: boolean): void {
+	syncAlbums = enabled;
+	localStorage.setItem(`${STORAGE_PREFIX}syncAlbums`, String(enabled));
 }
 
 export function clearAuth(): void {
@@ -146,6 +152,43 @@ export function hasArtistCache(): boolean {
 export function clearArtistCache(): void {
 	localStorage.removeItem(`${STORAGE_PREFIX}artistMatched`);
 	localStorage.removeItem(`${STORAGE_PREFIX}artistSkipped`);
+}
+
+// --- Album sync memory ---
+
+export function getAlbumMatchCache(): Record<string, number> {
+	try {
+		return JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}albumMatched`) ?? "{}");
+	} catch {
+		return {};
+	}
+}
+
+export function saveAlbumMatchCache(cache: Record<string, number>): void {
+	localStorage.setItem(`${STORAGE_PREFIX}albumMatched`, JSON.stringify(cache));
+}
+
+export function getAlbumSkipCache(): Record<string, true> {
+	try {
+		return JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}albumSkipped`) ?? "{}");
+	} catch {
+		return {};
+	}
+}
+
+export function saveAlbumSkipCache(skipped: Record<string, true>): void {
+	localStorage.setItem(`${STORAGE_PREFIX}albumSkipped`, JSON.stringify(skipped));
+}
+
+export function hasAlbumCache(): boolean {
+	const matched = localStorage.getItem(`${STORAGE_PREFIX}albumMatched`);
+	const skipped = localStorage.getItem(`${STORAGE_PREFIX}albumSkipped`);
+	return (matched !== null && matched !== "{}") || (skipped !== null && skipped !== "{}");
+}
+
+export function clearAlbumCache(): void {
+	localStorage.removeItem(`${STORAGE_PREFIX}albumMatched`);
+	localStorage.removeItem(`${STORAGE_PREFIX}albumSkipped`);
 }
 
 export function isLoggedIn(): boolean {

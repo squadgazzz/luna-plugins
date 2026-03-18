@@ -19,6 +19,12 @@ export interface SpotifyAlbum {
 	artists: SpotifyArtist[];
 }
 
+export interface SpotifySavedAlbum {
+	id: string;
+	name: string;
+	artists: SpotifyArtist[];
+}
+
 export interface SpotifyTrack {
 	id: string | null;
 	name: string;
@@ -181,4 +187,18 @@ export async function getFollowedArtists(onProgress?: (loaded: number) => void, 
 	}
 
 	return artists;
+}
+
+export async function getSavedAlbums(onProgress?: (loaded: number, total: number) => void, signal?: AbortSignal): Promise<SpotifySavedAlbum[]> {
+	return fetchAllPages<SpotifySavedAlbum>(
+		`${BASE}/me/albums?limit=50`,
+		(data) => {
+			const items = data.items as { album: { id: string; name: string; artists: SpotifyArtist[] } | null }[];
+			return items
+				.filter((i) => i.album !== null)
+				.map((i) => ({ id: i.album!.id, name: i.album!.name, artists: i.album!.artists }));
+		},
+		onProgress,
+		signal,
+	);
 }

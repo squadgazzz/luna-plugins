@@ -26,7 +26,7 @@ export function normalize(s: string): string {
 		.trim();
 }
 
-function simple(input: string): string {
+export function simple(input: string): string {
 	// Take text before first hyphen, parenthesis, or bracket
 	return input.split("-")[0].trim().split("(")[0].trim().split("[")[0].trim();
 }

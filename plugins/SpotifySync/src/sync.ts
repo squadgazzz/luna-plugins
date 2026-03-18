@@ -1,13 +1,15 @@
 import anyAscii from "any-ascii";
 import { redux } from "@luna/lib";
 import type { SpotifyPlaylist } from "./spotifyApi";
-import { getPlaylistTracks, getLikedTracks, getFollowedArtists } from "./spotifyApi";
+import { getPlaylistTracks, getLikedTracks, getFollowedArtists, getSavedAlbums } from "./spotifyApi";
 import { matchAllTracks } from "./matching";
-import { fetchUserPlaylists, fetchPlaylistTracks, fetchFavoriteTracks, addTracksToPlaylist, createPlaylist, addToFavorites, removeFromPlaylist, removeFromFavorites, fetchFollowedArtists, followArtists } from "./tidalApi";
+import { fetchUserPlaylists, fetchPlaylistTracks, fetchFavoriteTracks, addTracksToPlaylist, createPlaylist, addToFavorites, removeFromPlaylist, removeFromFavorites, fetchFollowedArtists, followArtists, fetchFavoriteAlbums, favoriteAlbums } from "./tidalApi";
 import type { TidalPlaylist, TidalTrackInfo } from "./tidalApi";
-import { getMatchCache, saveMatchCache, getSimilarDecisions, preserveFavOrder, getArtistMatchCache, saveArtistMatchCache, getArtistSkipCache, saveArtistSkipCache } from "./state";
+import { getMatchCache, saveMatchCache, getSimilarDecisions, preserveFavOrder, getArtistMatchCache, saveArtistMatchCache, getArtistSkipCache, saveArtistSkipCache, getAlbumMatchCache, saveAlbumMatchCache, getAlbumSkipCache, saveAlbumSkipCache } from "./state";
 import { matchAllArtists } from "./artistMatching";
 import type { ArtistToFollow, AmbiguousArtistMatch } from "./artistMatching";
+import { matchAllAlbums } from "./albumMatching";
+import type { AlbumToAdd, AmbiguousAlbumMatch } from "./albumMatching";
 
 // --- Types ---
 
@@ -80,6 +82,24 @@ export interface ArtistSyncResult {
 	skipped: number;
 	unmatched: number;
 	followedNames: string[];
+	unmatchedNames: string[];
+}
+
+// --- Album sync types ---
+
+export interface AlbumSyncPrepResult {
+	alreadyFavorited: number;
+	toAdd: AlbumToAdd[];
+	ambiguous: AmbiguousAlbumMatch[];
+	unmatched: string[];
+}
+
+export interface AlbumSyncResult {
+	added: number;
+	alreadyFavorited: number;
+	skipped: number;
+	unmatched: number;
+	addedNames: string[];
 	unmatchedNames: string[];
 }
 
@@ -611,14 +631,89 @@ export async function executeArtistSync(
 	};
 }
 
+async function prepareAlbumSync(
+	onProgress: ProgressCallback,
+	signal?: AbortSignal,
+): Promise<AlbumSyncPrepResult> {
+	onProgress("Fetching Spotify saved albums...");
+	const spotifyAlbums = await getSavedAlbums((loaded, total) => {
+		onProgress(`Fetching Spotify albums: ${loaded}/${total}...`, { current: loaded, total });
+	}, signal);
+
+	if (spotifyAlbums.length === 0) {
+		return { alreadyFavorited: 0, toAdd: [], ambiguous: [], unmatched: [] };
+	}
+
+	onProgress("Fetching Tidal favorite albums...");
+	const tidalAlbums = await fetchFavoriteAlbums(signal);
+	const existingIds = new Set(tidalAlbums.map((a) => a.id));
+
+	const matchCache = getAlbumMatchCache();
+	const skipCache = getAlbumSkipCache();
+
+	const result = await matchAllAlbums(spotifyAlbums, existingIds, matchCache, skipCache, (done, total, matched) => {
+		onProgress(`Matching albums: ${matched}/${total} matched`, { current: done, total });
+	}, signal);
+
+	saveAlbumMatchCache(matchCache);
+
+	return result;
+}
+
+export async function executeAlbumSync(
+	prep: AlbumSyncPrepResult,
+	onProgress: ProgressCallback,
+	signal?: AbortSignal,
+): Promise<AlbumSyncResult> {
+	const albumIds = prep.toAdd.map((a) => a.tidalAlbum.id);
+
+	const matchCache = getAlbumMatchCache();
+	const skipCache = getAlbumSkipCache();
+	for (const amb of prep.ambiguous) {
+		if (amb.selectedTidalId !== null) {
+			albumIds.push(amb.selectedTidalId);
+			matchCache[amb.spotifyAlbum.id] = amb.selectedTidalId;
+		} else {
+			skipCache[amb.spotifyAlbum.id] = true;
+		}
+	}
+	saveAlbumMatchCache(matchCache);
+	saveAlbumSkipCache(skipCache);
+
+	const skipped = prep.ambiguous.filter((a) => a.selectedTidalId === null).length;
+
+	if (albumIds.length > 0) {
+		onProgress(`Adding ${albumIds.length} albums to Tidal favorites...`);
+		await favoriteAlbums(albumIds, (done, total) => {
+			onProgress(`Adding albums: ${done}/${total}`, { current: done, total });
+		}, signal);
+		redux.actions["content/LOAD_ALL_FAVORITES"]();
+	}
+
+	const addedNames = [
+		...prep.toAdd.map((a) => `${a.spotifyAlbum.artists.map((ar) => ar.name).join(", ")} - ${a.spotifyAlbum.name}`),
+		...prep.ambiguous.filter((a) => a.selectedTidalId !== null).map((a) => `${a.spotifyAlbum.artists.map((ar) => ar.name).join(", ")} - ${a.spotifyAlbum.name}`),
+	];
+
+	return {
+		added: albumIds.length,
+		alreadyFavorited: prep.alreadyFavorited,
+		skipped,
+		unmatched: prep.unmatched.length,
+		addedNames,
+		unmatchedNames: prep.unmatched,
+	};
+}
+
 export async function prepareAll(
 	selectedPlaylists: SpotifyPlaylist[],
 	doSyncFavorites: boolean,
 	doSyncArtists: boolean,
+	doSyncAlbums: boolean,
 	onProgress: ProgressCallback,
 	onPrepared: (result: SyncPrepResult) => void,
 	signal?: AbortSignal,
-): Promise<{ playlists: SyncPrepResult[]; artists?: ArtistSyncPrepResult }> {
+): Promise<{ playlists: SyncPrepResult[]; artists?: ArtistSyncPrepResult; albums?: AlbumSyncPrepResult }> {
 	const playlists: SyncPrepResult[] = [];
 
 	onProgress("Fetching Tidal playlists...");
@@ -683,7 +778,18 @@ export async function prepareAll(
 		}
 	}
 
-	return { playlists, artists };
+	let albums: AlbumSyncPrepResult | undefined;
+	if (doSyncAlbums && !signal?.aborted) {
+		try {
+			albums = await prepareAlbumSync(onProgress, signal);
+		} catch (error) {
+			if (!(error instanceof DOMException && error.name === "AbortError")) {
+				onProgress(`Error preparing album sync: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+	}
+
+	return { playlists, artists, albums };
 }
 
 // --- Execute functions ---
