@@ -424,7 +424,7 @@ async function preparePlaylistSync(
 		alreadyPresent,
 		tracksToAdd,
 		tracksToRemove: [],
-		unmatchedTracks,
+		unmatchedTracks: unmatchedTracks.sort((a, b) => a.localeCompare(b)),
 	};
 }
 
@@ -553,7 +553,7 @@ async function prepareFavoritesSync(
 		alreadyPresent,
 		tracksToAdd,
 		tracksToRemove: [],
-		unmatchedTracks,
+		unmatchedTracks: unmatchedTracks.sort((a, b) => a.localeCompare(b)),
 	};
 }
 

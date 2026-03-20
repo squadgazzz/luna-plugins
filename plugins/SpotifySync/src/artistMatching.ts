@@ -98,5 +98,5 @@ export async function matchAllArtists(
 
 	if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
 
-	return { toFollow, ambiguous, alreadyFollowed, unmatched };
+	return { toFollow, ambiguous, alreadyFollowed, unmatched: unmatched.sort((a, b) => a.localeCompare(b)) };
 }

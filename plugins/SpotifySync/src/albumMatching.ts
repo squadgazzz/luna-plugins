@@ -125,5 +125,5 @@ export async function matchAllAlbums(
 
 	if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
 
-	return { toAdd, ambiguous, alreadyFavorited, unmatched };
+	return { toAdd, ambiguous, alreadyFavorited, unmatched: unmatched.sort((a, b) => a.localeCompare(b)) };
 }
