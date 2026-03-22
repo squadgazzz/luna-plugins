@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { Component, useEffect, useRef, useState } from "react";
+import type { ErrorInfo, ReactNode } from "react";
 import { LunaSettings, LunaSwitchSetting } from "@luna/ui";
 
 import {
@@ -35,7 +36,53 @@ import { fetchUserPlaylists, type TidalPlaylist } from "./tidalApi";
 import { prepareAll, executeAll, executeArtistSync, executeAlbumSync, type SyncPrepResult, type SyncPlaylistResult, type ArtistSyncPrepResult, type ArtistSyncResult, type AlbumSyncPrepResult, type AlbumSyncResult, type ProgressInfo } from "./sync";
 import { SyncModal, type ModalPhase } from "./SyncModal";
 
-export const Settings = () => {
+class SettingsErrorBoundary extends Component<{ children: ReactNode }, { error?: string }> {
+	state: { error?: string } = {};
+	static getDerivedStateFromError(error: Error) {
+		return { error: error.message || String(error) };
+	}
+	componentDidCatch(error: Error, info: ErrorInfo) {
+		console.error("[SpotifySync] Settings crashed:", error, info.componentStack);
+	}
+	render() {
+		if (this.state.error) {
+			return (
+				<LunaSettings>
+					<div style={{ padding: "16px", color: "#ff6b6b" }}>
+						<p style={{ margin: "0 0 8px", fontWeight: "bold" }}>SpotifySync settings crashed</p>
+						<p style={{ margin: "0 0 12px", fontSize: "13px", color: "rgba(255,255,255,0.6)" }}>{this.state.error}</p>
+						<p style={{ margin: "0 0 12px", fontSize: "12px", color: "rgba(255,255,255,0.4)" }}>
+							Try clearing storage: Ctrl+Alt+I → Application → Storage → Clear site data
+						</p>
+						<button
+							onClick={() => this.setState({ error: undefined })}
+							style={{
+								padding: "6px 16px",
+								borderRadius: "4px",
+								border: "1px solid rgba(255,255,255,0.2)",
+								background: "transparent",
+								color: "rgba(255,255,255,0.7)",
+								cursor: "pointer",
+								fontSize: "13px",
+							}}
+						>
+							Retry
+						</button>
+					</div>
+				</LunaSettings>
+			);
+		}
+		return this.props.children;
+	}
+}
+
+export const Settings = () => (
+	<SettingsErrorBoundary>
+		<SettingsInner />
+	</SettingsErrorBoundary>
+);
+
+const SettingsInner = () => {
 	const [loggedIn, setLoggedIn] = useState(isLoggedIn());
 	const [userName, setUserName] = useState("");
 	const [userId, setUserId] = useState("");
