@@ -84,6 +84,7 @@ async function spotifyFetch(url: string, signal?: AbortSignal, maxRetries = 5): 
 			if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
 			continue;
 		}
+		if (res.status === 403) throw new Error("Spotify API error: 403 Forbidden. A Spotify Premium account is required. If you have Premium, try disconnecting and re-logging in to refresh permissions.");
 		if (!res.ok) throw new Error(`Spotify API error: ${res.status} ${res.statusText}`);
 		return res;
 	}

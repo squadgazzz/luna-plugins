@@ -54,6 +54,8 @@ Sync your Spotify library to Tidal — playlists, liked songs, followed artists,
 - **Manual mode** — review every track, artist, and album before adding, with controls to select/deselect individual items or resolve ambiguous matches
 - **Copy unmatched** — copy the list of items that couldn't be found on Tidal to clipboard
 
+**Note:** Requires a [Spotify Developer App](https://developer.spotify.com/dashboard) with `tidaLuna://spotify-callback` as a Redirect URI. Since February 2026, Spotify requires a **Premium account** for Development Mode API access. If you see a "403 Forbidden" error after updating the plugin, disconnect and re-login to Spotify to refresh permissions.
+
 https://github.com/user-attachments/assets/c145c9db-d64e-4f1d-95f3-c23728fe9322
 
 ---
