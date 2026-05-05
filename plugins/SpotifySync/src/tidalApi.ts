@@ -1,5 +1,6 @@
 import { redux, TidalApi } from "@luna/lib";
 import { Semaphore, RateLimitTracker, fetchWithRetry } from "../../../lib/retry";
+import { tidalQueryArgs } from "../../../lib/tidalQuery";
 
 export interface TidalPlaylist {
 	uuid: string;
@@ -44,8 +45,8 @@ export async function fetchUserPlaylists(signal?: AbortSignal): Promise<TidalPla
 	if (userId === null) throw new Error("Not logged in");
 
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
-	const res = await fetchWithRetry(`https://api.tidal.com/v1/users/${userId}/playlists?${queryArgs}&limit=999`, { headers, signal }, rateLimit.retryOptions);
+	const queryArgs = tidalQueryArgs();
+	const res = await fetchWithRetry(`https://desktop.tidal.com/v1/users/${userId}/playlists?${queryArgs}&limit=999`, { headers, signal }, rateLimit.retryOptions);
 	if (!res.ok) throw new Error(`Failed to fetch playlists: ${res.status}`);
 
 	const data = (await res.json()) as { items: TidalPlaylist[] };
@@ -54,9 +55,9 @@ export async function fetchUserPlaylists(signal?: AbortSignal): Promise<TidalPla
 
 export async function fetchPlaylistTracks(playlistUUID: string, signal?: AbortSignal): Promise<TidalTrackInfo[]> {
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const res = await fetchWithRetry(
-		`https://api.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}&limit=-1`,
+		`https://desktop.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}&limit=-1`,
 		{ headers, signal },
 		rateLimit.retryOptions,
 	);
@@ -82,17 +83,17 @@ export async function addTracksToPlaylist(playlistUUID: string, trackIds: number
 		const batch = trackIds.slice(i, i + chunkSize);
 
 		const headers = await TidalApi.getAuthHeaders();
-		const queryArgs = TidalApi.queryArgs();
+		const queryArgs = tidalQueryArgs();
 
 		// Get ETag
-		const playlistRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers, signal }, rateLimit.retryOptions);
+		const playlistRes = await fetchWithRetry(`https://desktop.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers, signal }, rateLimit.retryOptions);
 		if (!playlistRes.ok) throw new Error(`Failed to fetch playlist for ETag: ${playlistRes.status}`);
 
 		const etag = playlistRes.headers.get("etag");
 		if (etag === null) throw new Error("Failed to get ETag from playlist response");
 
 		// Add tracks
-		const addRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}`, {
+		const addRes = await fetchWithRetry(`https://desktop.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}`, {
 			method: "POST",
 			headers: {
 				...headers,
@@ -104,7 +105,21 @@ export async function addTracksToPlaylist(playlistUUID: string, trackIds: number
 		}, rateLimit.retryOptions);
 		if (!addRes.ok) throw new Error(`Failed to add tracks to playlist: ${addRes.status}`);
 
-		added += batch.length;
+		// Tidal can return 200 with empty addedItemUuids (silent no-op).
+		const addBody = await addRes.text();
+		let addedUuids: unknown[] = [];
+		try {
+			const parsed = JSON.parse(addBody);
+			if (Array.isArray(parsed?.addedItemUuids)) addedUuids = parsed.addedItemUuids;
+		} catch { /* non-JSON */ }
+		if (addedUuids.length === 0 && batch.length > 0) {
+			throw new Error(`Tidal accepted the request but added 0 of ${batch.length} tracks. Response: ${addBody}`);
+		}
+		if (addedUuids.length !== batch.length) {
+			console.warn(`[SpotifySync] Tidal add mismatch: sent ${batch.length}, added ${addedUuids.length}. Body: ${addBody}`);
+		}
+
+		added += addedUuids.length;
 		onProgress?.(added, total);
 	}
 
@@ -140,7 +155,7 @@ export async function fetchFavoriteTracks(onProgress?: (message: string) => void
 	if (userId === null) throw new Error("Not logged in");
 
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const tracks: TidalTrackInfo[] = [];
 	let offset = 0;
 	const limit = 9999;
@@ -150,7 +165,7 @@ export async function fetchFavoriteTracks(onProgress?: (message: string) => void
 		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
 		onProgress?.(`Fetching Tidal favorites${tracks.length > 0 ? `: ${tracks.length} loaded...` : "..."}`);
 		const res = await fetchWithRetry(
-			`https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
+			`https://desktop.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
 			{ headers, signal },
 			rateLimit.retryOptions,
 		);
@@ -175,12 +190,12 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 	const userId = getUserId();
 	if (userId === null) throw new Error("Not logged in");
 
-	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
-	const url = `https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}`;
-	const postInit = (body: string): RequestInit => ({
+	const queryArgs = tidalQueryArgs();
+	const url = `https://desktop.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}`;
+	// Fresh headers per request: long syncs outlive the token's lifetime.
+	const postInit = async (body: string): Promise<RequestInit> => ({
 		method: "POST",
-		headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+		headers: { ...await TidalApi.getAuthHeaders(), "Content-Type": "application/x-www-form-urlencoded" },
 		body,
 		signal,
 	});
@@ -202,7 +217,7 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 			await sem.acquire();
 			try {
 				if (signal?.aborted) return;
-				const res = await fetchWithRetry(url, postInit(`trackId=${batch.join(",")}`), rateLimit.retryOptions);
+				const res = await fetchWithRetry(url, await postInit(`trackIds=${batch.join(",")}&onArtifactNotFound=SKIP`), rateLimit.retryOptions);
 				if (!res.ok) throw new Error(`Failed to add tracks to favorites: ${res.status}`);
 				added += batch.length;
 				onProgress?.(added, trackIds.length);
@@ -211,9 +226,10 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 			}
 		}));
 	} else {
+		// One track per request preserves strict order (Tidal favorites sort by created timestamp).
 		for (let i = 0; i < trackIds.length; i++) {
 			if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
-			const res = await fetchWithRetry(url, postInit(`trackId=${trackIds[i]}`), rateLimit.retryOptions);
+			const res = await fetchWithRetry(url, await postInit(`trackIds=${trackIds[i]}&onArtifactNotFound=SKIP`), rateLimit.retryOptions);
 			if (!res.ok) throw new Error(`Failed to add track to favorites: ${res.status}`);
 			onProgress?.(i + 1, trackIds.length);
 		}
@@ -225,16 +241,16 @@ export async function addToFavorites(trackIds: number[], onProgress?: (added: nu
 
 export async function removeFromPlaylist(playlistUUID: string, removeIndices: number[], signal?: AbortSignal): Promise<boolean> {
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 
-	const playlistRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers, signal }, rateLimit.retryOptions);
+	const playlistRes = await fetchWithRetry(`https://desktop.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers, signal }, rateLimit.retryOptions);
 	if (!playlistRes.ok) return false;
 
 	const etag = playlistRes.headers.get("etag");
 	if (etag === null) return false;
 
 	const indices = removeIndices.join(",");
-	const deleteRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}/items/${indices}?${queryArgs}`, {
+	const deleteRes = await fetchWithRetry(`https://desktop.tidal.com/v1/playlists/${playlistUUID}/items/${indices}?${queryArgs}`, {
 		method: "DELETE",
 		headers: {
 			...headers,
@@ -250,8 +266,7 @@ export async function removeFromFavorites(trackIds: number[], signal?: AbortSign
 	const userId = getUserId();
 	if (userId === null) return false;
 
-	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const sem = new Semaphore(5);
 	let failed = false;
 
@@ -261,8 +276,8 @@ export async function removeFromFavorites(trackIds: number[], signal?: AbortSign
 		try {
 			if (signal?.aborted || failed) return;
 			const res = await fetchWithRetry(
-				`https://api.tidal.com/v1/users/${userId}/favorites/tracks/${trackId}?${queryArgs}`,
-				{ method: "DELETE", headers, signal },
+				`https://desktop.tidal.com/v1/users/${userId}/favorites/tracks/${trackId}?${queryArgs}`,
+				{ method: "DELETE", headers: await TidalApi.getAuthHeaders(), signal },
 				rateLimit.retryOptions,
 			);
 			if (!res.ok) failed = true;
@@ -283,9 +298,9 @@ export async function removeFromFavorites(trackIds: number[], signal?: AbortSign
 
 export async function searchArtist(query: string, signal?: AbortSignal): Promise<TidalArtist[]> {
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const res = await fetchWithRetry(
-		`https://api.tidal.com/v1/search/artists?${queryArgs}&query=${encodeURIComponent(query)}&limit=10`,
+		`https://desktop.tidal.com/v1/search/artists?${queryArgs}&query=${encodeURIComponent(query)}&limit=10`,
 		{ headers, signal },
 		rateLimit.retryOptions,
 	);
@@ -299,7 +314,7 @@ export async function fetchFollowedArtists(signal?: AbortSignal): Promise<TidalA
 	if (userId === null) throw new Error("Not logged in");
 
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const artists: TidalArtist[] = [];
 	let offset = 0;
 	const limit = 9999;
@@ -308,7 +323,7 @@ export async function fetchFollowedArtists(signal?: AbortSignal): Promise<TidalA
 	while (offset < total) {
 		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
 		const res = await fetchWithRetry(
-			`https://api.tidal.com/v1/users/${userId}/favorites/artists?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
+			`https://desktop.tidal.com/v1/users/${userId}/favorites/artists?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
 			{ headers, signal },
 			rateLimit.retryOptions,
 		);
@@ -330,8 +345,7 @@ export async function followArtists(artistIds: number[], onProgress?: (done: num
 	const userId = getUserId();
 	if (userId === null) throw new Error("Not logged in");
 
-	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const sem = new Semaphore(5);
 	let done = 0;
 	rateLimit.reset();
@@ -342,10 +356,10 @@ export async function followArtists(artistIds: number[], onProgress?: (done: num
 		try {
 			if (signal?.aborted) return;
 			const res = await fetchWithRetry(
-				`https://api.tidal.com/v1/users/${userId}/favorites/artists?${queryArgs}`,
+				`https://desktop.tidal.com/v1/users/${userId}/favorites/artists?${queryArgs}`,
 				{
 					method: "POST",
-					headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+					headers: { ...await TidalApi.getAuthHeaders(), "Content-Type": "application/x-www-form-urlencoded" },
 					body: `artistId=${artistId}`,
 					signal,
 				},
@@ -369,9 +383,9 @@ export async function followArtists(artistIds: number[], onProgress?: (done: num
 
 export async function searchAlbum(query: string, signal?: AbortSignal): Promise<TidalAlbum[]> {
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const res = await fetchWithRetry(
-		`https://api.tidal.com/v1/search/albums?${queryArgs}&query=${encodeURIComponent(query)}&limit=10`,
+		`https://desktop.tidal.com/v1/search/albums?${queryArgs}&query=${encodeURIComponent(query)}&limit=10`,
 		{ headers, signal },
 		rateLimit.retryOptions,
 	);
@@ -385,7 +399,7 @@ export async function fetchFavoriteAlbums(signal?: AbortSignal): Promise<TidalAl
 	if (userId === null) throw new Error("Not logged in");
 
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const albums: TidalAlbum[] = [];
 	let offset = 0;
 	const limit = 9999;
@@ -394,7 +408,7 @@ export async function fetchFavoriteAlbums(signal?: AbortSignal): Promise<TidalAl
 	while (offset < total) {
 		if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
 		const res = await fetchWithRetry(
-			`https://api.tidal.com/v1/users/${userId}/favorites/albums?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
+			`https://desktop.tidal.com/v1/users/${userId}/favorites/albums?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
 			{ headers, signal },
 			rateLimit.retryOptions,
 		);
@@ -416,8 +430,7 @@ export async function favoriteAlbums(albumIds: number[], onProgress?: (done: num
 	const userId = getUserId();
 	if (userId === null) throw new Error("Not logged in");
 
-	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const sem = new Semaphore(5);
 	let done = 0;
 	rateLimit.reset();
@@ -428,10 +441,10 @@ export async function favoriteAlbums(albumIds: number[], onProgress?: (done: num
 		try {
 			if (signal?.aborted) return;
 			const res = await fetchWithRetry(
-				`https://api.tidal.com/v1/users/${userId}/favorites/albums?${queryArgs}`,
+				`https://desktop.tidal.com/v1/users/${userId}/favorites/albums?${queryArgs}`,
 				{
 					method: "POST",
-					headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+					headers: { ...await TidalApi.getAuthHeaders(), "Content-Type": "application/x-www-form-urlencoded" },
 					body: `albumId=${albumId}`,
 					signal,
 				},

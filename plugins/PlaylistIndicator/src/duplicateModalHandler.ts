@@ -1,6 +1,7 @@
 import type { LunaUnload } from "@luna/core";
 import { observePromise, redux, TidalApi } from "@luna/lib";
 import { RateLimitTracker, fetchWithRetry } from "../../../lib/retry";
+import { tidalQueryArgs } from "../../../lib/tidalQuery";
 
 import { removeFromPlaylistCache } from "./playlistCache";
 
@@ -12,18 +13,18 @@ const rateLimit = new RateLimitTracker("PlaylistIndicator");
 
 async function fetchPlaylistItemsFresh(playlistUUID: redux.ItemId) {
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
-	const res = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}&limit=-1`, { headers }, rateLimit.retryOptionsLimited);
+	const queryArgs = tidalQueryArgs();
+	const res = await fetchWithRetry(`https://desktop.tidal.com/v1/playlists/${playlistUUID}/items?${queryArgs}&limit=-1`, { headers }, rateLimit.retryOptionsLimited);
 	if (!res.ok) return undefined;
 	return res.json() as Promise<{ items: redux.MediaItem[]; totalNumberOfItems: number }>;
 }
 
 async function removeTracksFromPlaylist(playlistUUID: redux.ItemId, removeIndices: number[]): Promise<boolean> {
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 
 	// Fetch playlist to get its ETag (required for write operations)
-	const playlistRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers }, rateLimit.retryOptionsLimited);
+	const playlistRes = await fetchWithRetry(`https://desktop.tidal.com/v1/playlists/${playlistUUID}?${queryArgs}`, { headers }, rateLimit.retryOptionsLimited);
 	if (!playlistRes.ok) return false;
 
 	const etag = playlistRes.headers.get("etag");
@@ -31,7 +32,7 @@ async function removeTracksFromPlaylist(playlistUUID: redux.ItemId, removeIndice
 
 	// Delete items by index via the Tidal API
 	const indices = removeIndices.join(",");
-	const deleteRes = await fetchWithRetry(`https://api.tidal.com/v1/playlists/${playlistUUID}/items/${indices}?${queryArgs}`, {
+	const deleteRes = await fetchWithRetry(`https://desktop.tidal.com/v1/playlists/${playlistUUID}/items/${indices}?${queryArgs}`, {
 		method: "DELETE",
 		headers: {
 			...headers,

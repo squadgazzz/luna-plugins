@@ -45,11 +45,11 @@ importers:
 
   plugins/ClearFavorites: {}
 
-  plugins/DedupPlaylist: {}
-
   plugins/FilteredQueueFix: {}
 
   plugins/PlaylistIndicator: {}
+
+  plugins/PlaylistTools: {}
 
   plugins/ScrollToPlaying: {}
 

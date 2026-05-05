@@ -1,6 +1,7 @@
 import React, { useRef, useState } from "react";
 import { redux, TidalApi } from "@luna/lib";
 import { Semaphore, RateLimitTracker, fetchWithRetry } from "../../../lib/retry";
+import { tidalQueryArgs } from "../../../lib/tidalQuery";
 
 const CONFIRM_TEXT = "DELETE ALL";
 
@@ -16,7 +17,7 @@ async function fetchFavoriteTrackIds(signal: AbortSignal): Promise<number[]> {
 	if (userId === null) throw new Error("Not logged in");
 
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const ids: number[] = [];
 	let offset = 0;
 	const limit = 9999;
@@ -25,7 +26,7 @@ async function fetchFavoriteTrackIds(signal: AbortSignal): Promise<number[]> {
 	while (offset < total) {
 		if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
 		const res = await fetchWithRetry(
-			`https://api.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
+			`https://desktop.tidal.com/v1/users/${userId}/favorites/tracks?${queryArgs}&limit=${limit}&offset=${offset}&order=DATE&orderDirection=ASC`,
 			{ headers, signal },
 			rateLimit.retryOptions,
 		);
@@ -51,7 +52,7 @@ async function deleteAllFavorites(onProgress: (done: number, total: number) => v
 	if (trackIds.length === 0) return 0;
 
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const sem = new Semaphore(3);
 	let done = 0;
 	rateLimit.reset();
@@ -62,7 +63,7 @@ async function deleteAllFavorites(onProgress: (done: number, total: number) => v
 		try {
 			if (signal.aborted) return;
 			const res = await fetchWithRetry(
-				`https://api.tidal.com/v1/users/${userId}/favorites/tracks/${trackId}?${queryArgs}`,
+				`https://desktop.tidal.com/v1/users/${userId}/favorites/tracks/${trackId}?${queryArgs}`,
 				{ method: "DELETE", headers, signal },
 				rateLimit.retryOptions,
 			);

@@ -809,6 +809,7 @@ export async function executeAll(
 		const addedDescriptions = prep.tracksToAdd.map((t) => t.description);
 		const removeDescriptions = prep.tracksToRemove.map((t) => t.description);
 		let removedCount = 0;
+		let addedCount = 0;
 
 		try {
 			// Phase 1: Remove tracks first (before adding)
@@ -832,8 +833,10 @@ export async function executeAll(
 					const parallel = !preserveFavOrder;
 					onProgress(`Adding ${trackIds.length} tracks to favorites${parallel ? " (parallel)" : ""}...`);
 					await addToFavorites(trackIds, (added, total) => {
+						addedCount = added;
 						onProgress(`Adding to favorites: ${added}/${total}`, { current: added, total });
 					}, parallel, signal);
+					addedCount = trackIds.length;
 					onProgress(`Added ${trackIds.length} tracks to favorites`);
 				} else {
 					let targetUUID = prep.existingUUID;
@@ -849,8 +852,10 @@ export async function executeAll(
 					}
 					onProgress(`Adding ${trackIds.length} tracks to "${prep.playlistName}"...`);
 					await addTracksToPlaylist(targetUUID, trackIds, (added, total) => {
+						addedCount = added;
 						onProgress(`Adding tracks to "${prep.playlistName}": ${added}/${total}`, { current: added, total });
 					}, signal);
+					addedCount = trackIds.length;
 					onProgress(`Added ${trackIds.length} tracks to "${prep.playlistName}"`);
 				}
 			} else if (removedCount === 0) {
@@ -875,10 +880,10 @@ export async function executeAll(
 			playlistName: prep.playlistName,
 			matched: prep.matched,
 			unmatched: prep.unmatched,
-			added: trackIds.length,
+			added: addedCount,
 			removed: removedCount,
 			alreadyPresent: prep.alreadyPresent,
-			addedTracks: addedDescriptions,
+			addedTracks: addedDescriptions.slice(0, addedCount),
 			removedTracks: removeDescriptions,
 			unmatchedTracks: prep.unmatchedTracks,
 		};

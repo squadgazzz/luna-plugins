@@ -1,5 +1,6 @@
 import { TidalApi } from "@luna/lib";
 import { Semaphore, RateLimitTracker, fetchWithRetry } from "../../../lib/retry";
+import { tidalQueryArgs } from "../../../lib/tidalQuery";
 import type { SpotifyTrack } from "./spotifyApi";
 
 // --- Internal types ---
@@ -135,9 +136,9 @@ const rateLimit = new RateLimitTracker("SpotifySync");
 
 async function searchTidal(query: string, signal?: AbortSignal): Promise<TidalTrackResult[]> {
 	const headers = await TidalApi.getAuthHeaders();
-	const queryArgs = TidalApi.queryArgs();
+	const queryArgs = tidalQueryArgs();
 	const res = await fetchWithRetry(
-		`https://api.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`,
+		`https://desktop.tidal.com/v1/search/tracks?${queryArgs}&query=${encodeURIComponent(query)}&limit=20`,
 		{ headers, signal },
 		rateLimit.retryOptions,
 	);
