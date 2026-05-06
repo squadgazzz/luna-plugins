@@ -51,7 +51,6 @@ async function deleteAllFavorites(onProgress: (done: number, total: number) => v
 	const trackIds = await fetchFavoriteTrackIds(signal);
 	if (trackIds.length === 0) return 0;
 
-	const headers = await TidalApi.getAuthHeaders();
 	const queryArgs = tidalQueryArgs();
 	const sem = new Semaphore(3);
 	let done = 0;
@@ -64,7 +63,7 @@ async function deleteAllFavorites(onProgress: (done: number, total: number) => v
 			if (signal.aborted) return;
 			const res = await fetchWithRetry(
 				`https://desktop.tidal.com/v1/users/${userId}/favorites/tracks/${trackId}?${queryArgs}`,
-				{ method: "DELETE", headers, signal },
+				{ method: "DELETE", headers: await TidalApi.getAuthHeaders(), signal },
 				rateLimit.retryOptions,
 			);
 			if (!res.ok) console.warn(`[ClearFavorites] Failed to delete track ${trackId}: ${res.status}`);

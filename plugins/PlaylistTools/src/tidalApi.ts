@@ -120,7 +120,6 @@ export async function removeFromFavorites(trackIds: number[], onProgress?: (remo
 	const userId = getUserId();
 	if (userId === null) return false;
 
-	const headers = await TidalApi.getAuthHeaders();
 	const queryArgs = tidalQueryArgs();
 	const sem = new Semaphore(5);
 	let done = 0;
@@ -133,7 +132,7 @@ export async function removeFromFavorites(trackIds: number[], onProgress?: (remo
 			if (signal?.aborted || failed) return;
 			const res = await fetchWithRetry(
 				`https://desktop.tidal.com/v1/users/${userId}/favorites/tracks/${trackId}?${queryArgs}`,
-				{ method: "DELETE", headers, signal },
+				{ method: "DELETE", headers: await TidalApi.getAuthHeaders(), signal },
 				rateLimit.retryOptions,
 			);
 			if (!res.ok) failed = true;
