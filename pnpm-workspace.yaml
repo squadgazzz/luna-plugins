@@ -1,2 +1,7 @@
 packages:
  - "plugins/*"
+
+# esbuild ships a native binary via a postinstall script. pnpm 10+ blocks build
+# scripts unless allow-listed, so CI (pnpm install) hard-fails without this.
+allowBuilds:
+  esbuild: true
