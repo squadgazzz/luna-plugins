@@ -129,7 +129,21 @@ export async function getMe(signal?: AbortSignal): Promise<{ id: string; display
 export async function getPlaylists(signal?: AbortSignal): Promise<SpotifyPlaylist[]> {
 	return fetchAllPages<SpotifyPlaylist>(
 		`${BASE}/me/playlists?limit=50`,
-		(data) => data.items as SpotifyPlaylist[],
+		// Spotify's /me/playlists returns null entries and items missing `tracks`/`owner`
+		// (deleted or unavailable followed playlists). Drop the unusable ones and normalize
+		// the rest so downstream render/sync can rely on the shape.
+		(data) => {
+			const items = (data.items ?? []) as (Partial<SpotifyPlaylist> | null)[];
+			return items
+				.filter((p): p is Partial<SpotifyPlaylist> => p != null && typeof p.id === "string")
+				.map((p) => ({
+					id: p.id!,
+					name: p.name ?? "(untitled)",
+					description: p.description ?? "",
+					tracks: { total: p.tracks?.total ?? 0 },
+					owner: { id: p.owner?.id ?? "" },
+				}));
+		},
 		undefined,
 		signal,
 	);
