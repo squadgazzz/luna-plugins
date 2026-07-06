@@ -84,7 +84,7 @@ async function spotifyFetch(url: string, signal?: AbortSignal, maxRetries = 5): 
 			if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
 			continue;
 		}
-		if (res.status === 403) throw new Error("Spotify API error: 403 Forbidden. A Spotify Premium account is required. If you have Premium, try disconnecting and re-logging in to refresh permissions.");
+		if (res.status === 403) throw new Error("Spotify API error: 403 Forbidden. In Development Mode, Spotify only lets an app read playlists you own or collaborate on (not followed or editorial playlists), and requires Premium. If you own this playlist and have Premium, try disconnecting and re-logging in to refresh permissions.");
 		if (!res.ok) throw new Error(`Spotify API error: ${res.status} ${res.statusText}`);
 		return res;
 	}
@@ -132,15 +132,17 @@ export async function getPlaylists(signal?: AbortSignal): Promise<SpotifyPlaylis
 		// Spotify's /me/playlists returns null entries and items missing `tracks`/`owner`
 		// (deleted or unavailable followed playlists). Drop the unusable ones and normalize
 		// the rest so downstream render/sync can rely on the shape.
+		// The Feb/Mar 2026 API migration renamed the playlist `tracks` field to `items`,
+		// so read whichever is present or the count shows 0 for every playlist.
 		(data) => {
-			const items = (data.items ?? []) as (Partial<SpotifyPlaylist> | null)[];
+			const items = (data.items ?? []) as ((Partial<SpotifyPlaylist> & { items?: { total?: number } }) | null)[];
 			return items
-				.filter((p): p is Partial<SpotifyPlaylist> => p != null && typeof p.id === "string")
+				.filter((p): p is Partial<SpotifyPlaylist> & { items?: { total?: number } } => p != null && typeof p.id === "string")
 				.map((p) => ({
 					id: p.id!,
 					name: p.name ?? "(untitled)",
 					description: p.description ?? "",
-					tracks: { total: p.tracks?.total ?? 0 },
+					tracks: { total: p.tracks?.total ?? p.items?.total ?? 0 },
 					owner: { id: p.owner?.id ?? "" },
 				}));
 		},
@@ -154,12 +156,16 @@ export async function getPlaylistTracks(
 	onProgress?: (loaded: number, total: number) => void,
 	signal?: AbortSignal,
 ): Promise<SpotifyTrack[]> {
-	const fields = "next,total,limit,items(track(name,album(name,artists),artists,track_number,duration_ms,id,external_ids(isrc),type))";
+	// Spotify's Feb/Mar 2026 migration replaced GET /playlists/{id}/tracks (now 403 for
+	// Development Mode apps) with /items, and renamed each entry's `track` field to `item`.
+	// No `fields` projection: the old one named `track`, and the default response already
+	// carries everything we read (id, name, artists, album, external_ids.isrc, type).
+	// Read `item ?? track` so it works whichever field name the account's API version uses.
 	const tracks = await fetchAllPages<SpotifyTrack>(
-		`${BASE}/playlists/${playlistId}/tracks?limit=100&fields=${encodeURIComponent(fields)}`,
+		`${BASE}/playlists/${playlistId}/items?limit=100`,
 		(data) => {
-			const items = data.items as { track: SpotifyTrack | null }[];
-			return items.map((i) => i.track).filter((t): t is SpotifyTrack => t !== null);
+			const items = (data.items ?? []) as { item?: SpotifyTrack | null; track?: SpotifyTrack | null }[];
+			return items.map((i) => i.item ?? i.track).filter((t): t is SpotifyTrack => t != null);
 		},
 		onProgress,
 		signal,
