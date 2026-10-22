@@ -58,6 +58,7 @@ export interface SyncPlaylistResult {
 	addedTracks: string[];
 	removedTracks: string[];
 	unmatchedTracks: string[];
+	error?: string;
 }
 
 export interface ProgressInfo {
@@ -810,6 +811,7 @@ export async function executeAll(
 		const removeDescriptions = prep.tracksToRemove.map((t) => t.description);
 		let removedCount = 0;
 		let addedCount = 0;
+		let syncError: string | undefined;
 
 		try {
 			// Phase 1: Remove tracks first (before adding)
@@ -836,8 +838,7 @@ export async function executeAll(
 						addedCount = added;
 						onProgress(`Adding to favorites: ${added}/${total}`, { current: added, total });
 					}, parallel, signal);
-					addedCount = trackIds.length;
-					onProgress(`Added ${trackIds.length} tracks to favorites`);
+					onProgress(`Added ${addedCount} tracks to favorites`);
 				} else {
 					let targetUUID = prep.existingUUID;
 					if (!targetUUID) {
@@ -855,8 +856,7 @@ export async function executeAll(
 						addedCount = added;
 						onProgress(`Adding tracks to "${prep.playlistName}": ${added}/${total}`, { current: added, total });
 					}, signal);
-					addedCount = trackIds.length;
-					onProgress(`Added ${trackIds.length} tracks to "${prep.playlistName}"`);
+					onProgress(`Added ${addedCount} tracks to "${prep.playlistName}"`);
 				}
 			} else if (removedCount === 0) {
 				onProgress(`No new tracks to add to "${prep.playlistName}"`);
@@ -873,7 +873,9 @@ export async function executeAll(
 			}
 		} catch (error) {
 			if (error instanceof DOMException && error.name === "AbortError") break;
-			onProgress(`Error syncing "${prep.playlistName}": ${error instanceof Error ? error.message : String(error)}`);
+			syncError = error instanceof Error ? error.message : String(error);
+			console.error(`[SpotifySync] Error syncing "${prep.playlistName}":`, error);
+			onProgress(`Error syncing "${prep.playlistName}": ${syncError}`);
 		}
 
 		const result: SyncPlaylistResult = {
@@ -886,6 +888,7 @@ export async function executeAll(
 			addedTracks: addedDescriptions.slice(0, addedCount),
 			removedTracks: removeDescriptions,
 			unmatchedTracks: prep.unmatchedTracks,
+			error: syncError,
 		};
 		results.push(result);
 		onDone(result);

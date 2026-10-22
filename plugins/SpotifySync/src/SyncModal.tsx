@@ -636,6 +636,11 @@ export const SyncModal = ({ phase, progressMessage, progressInfo, prepResults, a
 								<div style={{ color: "rgba(255,255,255,0.6)", fontSize: "13px", marginBottom: "6px" }}>
 									Matched: {result.matched} | Added: {result.added}{result.removed > 0 ? ` | Removed: ${result.removed}` : ""} | Already present: {result.alreadyPresent} | Not found: {result.unmatched}
 								</div>
+								{result.error && (
+									<div style={{ color: "rgba(255,100,100,0.8)", fontSize: "13px", marginBottom: "6px", wordBreak: "break-word" }}>
+										Error: {result.error}
+									</div>
+								)}
 								<TrackList
 									label={`unmatched track${result.unmatchedTracks.length !== 1 ? "s" : ""}`}
 									tracks={result.unmatchedTracks}
